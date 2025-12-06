@@ -1,0 +1,19 @@
+# FastAPI and server
+fastapi==0.109.0
+uvicorn[standard]>=0.31.1
+pydantic>=2.7.4,<3.0.0
+pydantic-settings>=2.5.2
+
+# Google Gemini API
+google-genai==0.2.2
+
+# Docker
+docker==7.0.0
+
+# Database
+psycopg2-binary>=2.9.11  # 2.9.11+ required for Python 3.14 support
+redis==5.0.1
+
+# Utilities
+python-dotenv==1.0.0
+

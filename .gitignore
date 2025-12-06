@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# macOS
+.DS_Store
+
+# Docker
+*.log
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+
+# Poetry/UV
+poetry.lock
+uv.lock
+
+# Misc
+.idea/
+.vscode/
+
+# Evaluation database
+evaluation.db
+*.db

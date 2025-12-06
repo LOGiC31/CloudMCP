@@ -1,0 +1,28 @@
+Read the proposal.pdf and build a plan to build the project. 
+Some critical requirements.
+
+I need a one stop MCP orchestrator which can call cli commands(local) or api calls (GCP) to fix issues in infrastructure.
+Local: Phase 1
+Construct a simple docker application which will use a database and redis cache. We need to simulate this application in such a way it causes load on database or cache, and application fails. This should be catched by our common Log accumulator which will pass the data and application configuration and other details required to LLM, LLM upon determining the fix should fix this automatically using the mcp tools.
+
+Mcp tools: these are standard infra modification cli or api calls wrapped by mcp sdk which LLM can call to fix issues like database scaling or cache clear or some operation. This list should be passed along with the failure logs so llm can call these tools to fix the problem.
+
+Monitoring local: I dont want to keep polling the logs to find failures, instead  I want the to make this a user triggered operation from UI, where I should see logs and error. Once i confirm the system is failing I click a button which should perform the LLM interaction and fix step.
+Logging and UI : I want a UI dashboard to see all the details about the project on a modern UI, where I can see what resource is there in application, what is their state/status and any failures. I should also have separate tab for LLM interaction where I can see what interaction with the LLM have been made. 
+
+Testing : we have to simulate this application in such a way it causes load on database or cache, and application fails. Then LLM intervenes fix the issue and store the results. (root cause, fix and after results) -> this data will serve as evaluation for this project.
+
+Cloud: Phase 2
+
+The only change is that now the application is deployed over GCP resources, now we need to poll GCP apis for status. And have a LLM interaction module running locally on my system, later I’ll deploy it to gcp along with other resources but for now keep the LLM module (interaction and mcp tools locally on my system).
+
+Some critical requirements:
+Good UI for both local and cloud resource managements, all the data should be visible for testing and evaluation purpose.
+Use gemini API for LLM reasoning, i have the key,
+
+Keep the resource number minimum for now will add more resource later
+The choice of sample application is upto you, just make sure to choose one where we can simulate the failure behavior
+
+
+
+
