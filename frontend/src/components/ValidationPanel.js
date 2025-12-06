@@ -19,7 +19,9 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
   };
 
   const getAllHealthy = () => {
-    return resources.length > 0 && resources.every(r => r.status === 'HEALTHY');
+    // Consider HEALTHY, READY, RUNNING, RUNNABLE as healthy states (for both local and GCP resources)
+    const healthyStatuses = ['HEALTHY', 'READY', 'RUNNING', 'RUNNABLE'];
+    return resources.length > 0 && resources.every(r => healthyStatuses.includes(r.status));
   };
 
   const validateFailureIntroduced = () => {
@@ -34,10 +36,19 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
     // Use the snapshot of degraded state when failure was detected
     // This prevents false negatives if the LLM fix happens very quickly
     const degradedSnapshot = validationState.degradedStateSnapshot || {};
-    const expectedResources = validationState.failureType === 'redis' ? ['redis'] :
-                             validationState.failureType === 'database' ? ['postgres'] :
-                             validationState.failureType === 'nginx' ? ['nginx'] :
-                             ['redis', 'postgres', 'nginx'];
+    
+    // Determine expected resources based on failure type and resource name
+    let expectedResources;
+    if (validationState.resourceName) {
+      // GCP failure: check the specific resource name
+      expectedResources = [validationState.resourceName.toLowerCase()];
+    } else {
+      // Local failure: use type-based mapping
+      expectedResources = validationState.failureType === 'redis' ? ['redis'] :
+                         validationState.failureType === 'database' ? ['postgres'] :
+                         validationState.failureType === 'nginx' ? ['nginx'] :
+                         ['redis', 'postgres', 'nginx'];
+    }
     
     // Check if we have a snapshot of degraded resources
     const foundInSnapshot = expectedResources.filter(expected => {

@@ -26,6 +26,9 @@ const LLMChat = ({ selectedResource, onFixTriggered, degradedResources = [], res
     setMessages((prev) => [...prev, userMessage]);
 
     try {
+      // Notify parent that fix is starting (this will stop status polling)
+      onFixTriggered();
+      
       // Trigger fix
       const fixResponse = await fixService.trigger();
       const fixId = fixResponse.data.id;
@@ -39,12 +42,15 @@ const LLMChat = ({ selectedResource, onFixTriggered, degradedResources = [], res
       setMessages((prev) => [...prev, systemMessage]);
 
       // Poll for fix completion
-      const fixCompleted = await pollFixStatus(fixId);
+      const fixExecutionStatus = await pollFixStatus(fixId);
       
-      // Only call onFixTriggered after fix completes
-      if (fixCompleted) {
-        onFixTriggered();
-      }
+      // After fix completes (SUCCESS, FAILED, TIMEOUT, or ERROR), notify parent to check status and resume polling
+      // onFixTriggered() was already called at the start to stop polling
+      // Now we need to check status and resume polling regardless of success/failure
+      // Always call onFixTriggered with execution status to mark fix as completed and resume polling
+      const finalStatus = fixExecutionStatus || 'UNKNOWN';
+      console.log('[LLMChat] Fix polling completed with status:', finalStatus);
+      onFixTriggered(finalStatus);
     } catch (error) {
       const errorMessage = {
         type: 'error',
@@ -52,6 +58,9 @@ const LLMChat = ({ selectedResource, onFixTriggered, degradedResources = [], res
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
+      
+      // Even on error, notify parent to resume polling
+      onFixTriggered('ERROR');
     } finally {
       setLoading(false);
     }
@@ -61,7 +70,7 @@ const LLMChat = ({ selectedResource, onFixTriggered, degradedResources = [], res
     const maxAttempts = 30;
     let attempts = 0;
     const processedToolMessages = new Set();
-    let fixCompleted = false;
+    let fixExecutionStatus = null; // Track execution status (SUCCESS, FAILED, or null)
 
     const poll = async () => {
       try {
@@ -130,8 +139,11 @@ const LLMChat = ({ selectedResource, onFixTriggered, degradedResources = [], res
           });
         }
 
-        // Check if complete
+        // Check if complete (SUCCESS or FAILED)
         if (fix.execution_status && fix.execution_status !== 'PENDING') {
+          fixExecutionStatus = fix.execution_status; // Store status for return value
+          console.log('[LLMChat] Fix execution completed with status:', fixExecutionStatus);
+          
           const statusMessage = {
             type: 'system',
             content: `Fix ${fix.execution_status}: ${fix.execution_status === 'SUCCESS' ? 'All issues resolved' : 'Some issues remain'}`,
@@ -144,31 +156,35 @@ const LLMChat = ({ selectedResource, onFixTriggered, degradedResources = [], res
             return [...prev, statusMessage];
           });
           
-          // Mark as completed if SUCCESS
-          if (fix.execution_status === 'SUCCESS') {
-            fixCompleted = true;
-          }
-          return;
+          return; // Exit polling - fix is complete (SUCCESS or FAILED)
         }
 
         attempts++;
         if (attempts < maxAttempts) {
           setTimeout(poll, 2000);
         } else {
-          // Timeout reached
+          // Timeout reached - fix may still be pending, but we'll treat it as done
+          fixExecutionStatus = 'TIMEOUT';
+          console.log('[LLMChat] Fix polling timed out after', maxAttempts, 'attempts');
           return;
         }
       } catch (error) {
-        console.error('Error polling fix status:', error);
+        console.error('[LLMChat] Error polling fix status:', error);
         attempts++;
         if (attempts < maxAttempts) {
           setTimeout(poll, 2000);
+        } else {
+          // Timeout on error - treat as done
+          fixExecutionStatus = 'ERROR';
+          console.log('[LLMChat] Fix polling failed after', maxAttempts, 'attempts');
+          return;
         }
       }
     };
 
     await poll();
-    return fixCompleted;
+    // Return execution status (SUCCESS, FAILED, TIMEOUT, ERROR, or null)
+    return fixExecutionStatus;
   };
 
   const formatMessage = (message) => {

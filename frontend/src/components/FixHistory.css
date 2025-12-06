@@ -47,6 +47,8 @@
   align-items: center;
 }
 
+.btn-load-history,
+.btn-refresh-history,
 .btn-export-csv,
 .btn-delete-history {
   display: flex;
@@ -60,6 +62,26 @@
   transition: all 0.2s ease;
   font-family: 'Inter', sans-serif;
   border: 2px solid;
+}
+
+.btn-load-history,
+.btn-refresh-history {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.btn-load-history:hover:not(:disabled),
+.btn-refresh-history:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.15);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.btn-load-history:disabled,
+.btn-refresh-history:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-export-csv {

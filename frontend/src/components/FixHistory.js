@@ -5,27 +5,26 @@ import './FixHistory.css';
 
 const FixHistory = ({ refreshKey }) => {
   const [fixes, setFixes] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [selectedFix, setSelectedFix] = useState(null);
-
-  useEffect(() => {
-    loadFixHistory();
-    // Refresh every 1 minute
-    const interval = setInterval(loadFixHistory, 60000);
-    return () => clearInterval(interval);
-  }, []);
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   // Refresh when refreshKey changes (triggered by parent when clearing)
+  // NOTE: This is on-demand only - no automatic polling
   useEffect(() => {
     if (refreshKey > 0) {
       loadFixHistory();
     }
   }, [refreshKey]);
 
+  // On-demand API call - only triggered by user action (button click) or refreshKey change
+  // No automatic polling to reduce API load
   const loadFixHistory = async () => {
     try {
+      setLoading(true);
       const response = await fixService.getAll({ limit: 20 });
       setFixes(response.data || []);
+      setHasLoaded(true);
       setLoading(false);
     } catch (error) {
       console.error('Error loading fix history:', error);
@@ -163,49 +162,65 @@ const FixHistory = ({ refreshKey }) => {
     document.body.removeChild(link);
   };
 
-  if (loading) {
-    return (
-      <div className="fix-history">
-        <div className="history-header">
-          <History size={20} />
-          <h2>Fix History</h2>
-        </div>
-        <div className="history-loading">Loading...</div>
-      </div>
-    );
-  }
-
   return (
     <div className="fix-history">
       <div className="history-header">
         <History size={20} />
         <h2>Fix History</h2>
-        <span className="history-count">{fixes.length}</span>
+        {hasLoaded && <span className="history-count">{fixes.length}</span>}
         <div className="history-actions">
-          <button 
-            className="btn-export-csv" 
-            onClick={handleExportCSV}
-            disabled={fixes.length === 0}
-            title="Export fix history as CSV"
-          >
-            <Download size={16} />
-            Export CSV
-          </button>
-          <button 
-            className="btn-delete-history" 
-            onClick={handleDeleteAll}
-            disabled={fixes.length === 0}
-            title="Delete all fix history"
-          >
-            <Trash2 size={16} />
-            Delete All
-          </button>
+          {!hasLoaded ? (
+            <button 
+              className="btn-load-history" 
+              onClick={loadFixHistory}
+              disabled={loading}
+              title="Load fix history"
+            >
+              {loading ? 'Loading...' : 'Show Fix History'}
+            </button>
+          ) : (
+            <>
+              <button 
+                className="btn-refresh-history" 
+                onClick={loadFixHistory}
+                disabled={loading}
+                title="Refresh fix history"
+              >
+                {loading ? 'Refreshing...' : 'Refresh'}
+              </button>
+              <button 
+                className="btn-export-csv" 
+                onClick={handleExportCSV}
+                disabled={fixes.length === 0}
+                title="Export fix history as CSV"
+              >
+                <Download size={16} />
+                Export CSV
+              </button>
+              <button 
+                className="btn-delete-history" 
+                onClick={handleDeleteAll}
+                disabled={fixes.length === 0}
+                title="Delete all fix history"
+              >
+                <Trash2 size={16} />
+                Delete All
+              </button>
+            </>
+          )}
         </div>
       </div>
-      <div className="history-list">
-        {fixes.length === 0 ? (
-          <div className="history-empty">No fixes yet</div>
-        ) : (
+      {!hasLoaded ? (
+        <div className="history-empty">
+          Click "Show Fix History" to load past fixes
+        </div>
+      ) : loading ? (
+        <div className="history-loading">Loading...</div>
+      ) : (
+        <div className="history-list">
+          {fixes.length === 0 ? (
+            <div className="history-empty">No fixes yet</div>
+          ) : (
           fixes.map((fix) => {
             const statusChanges = getResourceStatusChange(fix);
             const tools = fix.tools_used || [];
@@ -297,11 +312,13 @@ const FixHistory = ({ refreshKey }) => {
               </div>
             );
           })
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
 export default FixHistory;
+
 

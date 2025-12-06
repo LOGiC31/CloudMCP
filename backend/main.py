@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from backend.config import settings
-from backend.api.routes import resources, logs, llm, fixes, mcp
+from backend.api.routes import resources, logs, llm, fixes, mcp, gcp_failures
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -58,6 +58,7 @@ app.include_router(logs.router, prefix=settings.API_PREFIX)
 app.include_router(llm.router, prefix=settings.API_PREFIX)
 app.include_router(fixes.router, prefix=settings.API_PREFIX)
 app.include_router(mcp.router, prefix=settings.API_PREFIX)
+app.include_router(gcp_failures.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")

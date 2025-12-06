@@ -84,5 +84,72 @@ export const sampleAppService = {
   },
 };
 
+export const gcpFailureService = {
+  // Redis failures
+  redisMemoryPressure: async (instanceId, fillPercent = 0.95) => {
+    return api.post(`/api/gcp/failures/redis/${instanceId}/memory-pressure`, null, {
+      params: { fill_percent: fillPercent }
+    });
+  },
+  clearRedisMemory: async (instanceId) => {
+    return api.post(`/api/gcp/failures/redis/${instanceId}/clear-memory`);
+  },
+  degradeRedis: async (instanceId, memoryGb = 0.5) => {
+    return api.post(`/api/gcp/failures/redis/${instanceId}/degrade`, null, {
+      params: { memory_gb: memoryGb }
+    });
+  },
+  resetRedis: async (instanceId, memoryGb = 1.0) => {
+    return api.post(`/api/gcp/failures/redis/${instanceId}/reset`, null, {
+      params: { memory_gb: memoryGb }
+    });
+  },
+  // Compute failures
+  computeCpuStress: async (instanceName, zone = null, durationSeconds = 600, cpuPercent = 90) => {
+    return api.post(`/api/gcp/failures/compute/${instanceName}/cpu-stress`, null, {
+      params: { 
+        zone: zone || undefined,
+        duration_seconds: durationSeconds,
+        cpu_percent: cpuPercent
+      }
+    });
+  },
+  computeMemoryPressure: async (instanceName, zone = null, fillPercent = 0.90) => {
+    return api.post(`/api/gcp/failures/compute/${instanceName}/memory-pressure`, null, {
+      params: { 
+        zone: zone || undefined,
+        fill_percent: fillPercent
+      }
+    });
+  },
+  stopCompute: async (instanceName, zone = null) => {
+    return api.post(`/api/gcp/failures/compute/${instanceName}/stop`, null, {
+      params: zone ? { zone } : {}
+    });
+  },
+  startCompute: async (instanceName, zone = null) => {
+    return api.post(`/api/gcp/failures/compute/${instanceName}/start`, null, {
+      params: zone ? { zone } : {}
+    });
+  },
+  // SQL failures
+  sqlConnectionOverload: async (instanceId, connections = 100) => {
+    return api.post(`/api/gcp/failures/sql/${instanceId}/connection-overload`, null, {
+      params: { connections }
+    });
+  },
+  sqlBlockingQueries: async (instanceId, queries = 10, durationSeconds = 300) => {
+    return api.post(`/api/gcp/failures/sql/${instanceId}/blocking-queries`, null, {
+      params: { queries, duration_seconds: durationSeconds }
+    });
+  },
+  stopSQL: async (instanceId) => {
+    return api.post(`/api/gcp/failures/sql/${instanceId}/stop`);
+  },
+  startSQL: async (instanceId) => {
+    return api.post(`/api/gcp/failures/sql/${instanceId}/start`);
+  },
+};
+
 export default api;
 

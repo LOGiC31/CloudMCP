@@ -208,15 +208,27 @@ class GCPResourceMonitor:
                 # Get instance status and metrics
                 status = instance.status  # RUNNING, STOPPING, TERMINATED, etc.
                 
-                # Normalize status
+                # Get metrics (CPU, memory) from Cloud Monitoring first
+                metrics = await self._get_compute_metrics(instance.name)
+                
+                # Normalize status based on instance state AND metrics
                 normalized_status = "HEALTHY"
                 if status == "TERMINATED" or status == "STOPPING":
                     normalized_status = "FAILED"
                 elif status == "STAGING" or status == "PROVISIONING":
                     normalized_status = "DEGRADED"
-                
-                # Get metrics (CPU, memory) from Cloud Monitoring
-                metrics = await self._get_compute_metrics(instance.name)
+                else:
+                    # Check metrics for performance issues
+                    cpu_usage = metrics.get("cpu_usage_percent", 0.0)
+                    memory_usage = metrics.get("memory_usage_percent", 0.0)
+                    disk_usage = metrics.get("disk_usage_percent", 0.0)
+                    
+                    # Mark as DEGRADED if CPU > 90%, memory > 90%, or disk > 95%
+                    if cpu_usage > 90.0 or memory_usage > 90.0 or disk_usage > 95.0:
+                        normalized_status = "DEGRADED"
+                    # Mark as FAILED if CPU > 95%, memory > 95%, or disk > 98%
+                    elif cpu_usage > 95.0 or memory_usage > 95.0 or disk_usage > 98.0:
+                        normalized_status = "FAILED"
                 
                 resource = {
                     "id": f"gcp-compute-{instance.name}",
@@ -379,21 +391,255 @@ class GCPResourceMonitor:
         
         return resources
     
+    def _get_gcloud_path(self):
+        """Find gcloud CLI path for SSH commands."""
+        import shutil
+        import os
+        
+        possible_paths = [
+            shutil.which('gcloud'),
+            os.path.expanduser('~/google-cloud-sdk/bin/gcloud'),
+            os.path.expanduser('~/Downloads/google-cloud-sdk/bin/gcloud'),
+            os.path.expanduser('~/Desktop/google-cloud-sdk/bin/gcloud'),
+            '/usr/local/bin/gcloud',
+            '/opt/homebrew/bin/gcloud',
+            '/usr/bin/gcloud',
+        ]
+        
+        for path in possible_paths:
+            if path and os.path.exists(path) and os.access(path, os.X_OK):
+                return path
+        return None
+    
+    async def _get_cpu_usage_via_ssh(self, instance_name: str, zone: str) -> float:
+        """Get CPU usage directly from the instance via SSH (faster than Cloud Monitoring)."""
+        try:
+            import subprocess
+            import asyncio
+            import os
+            
+            gcloud_path = self._get_gcloud_path()
+            if not gcloud_path:
+                logger.debug(f"gcloud not found, cannot get CPU via SSH for {instance_name}")
+                return 0.0
+            
+            # Use /proc/stat to calculate CPU usage (more reliable than top)
+            ssh_command = [
+                gcloud_path, 'compute', 'ssh',
+                instance_name,
+                f'--zone={zone}',
+                f'--project={self.project_id}',
+                '--command',
+                """python3 -c "
+import time
+def get_cpu_usage():
+    with open('/proc/stat', 'r') as f:
+        line = f.readline()
+    fields = line.split()
+    user = int(fields[1])
+    nice = int(fields[2])
+    system = int(fields[3])
+    idle = int(fields[4])
+    iowait = int(fields[5]) if len(fields) > 5 else 0
+    total = user + nice + system + idle + iowait
+    return user + nice + system, total
+
+# Get two samples 1 second apart
+used1, total1 = get_cpu_usage()
+time.sleep(1)
+used2, total2 = get_cpu_usage()
+
+if total2 > total1:
+    cpu_percent = ((used2 - used1) / (total2 - total1)) * 100
+    print(f'{cpu_percent:.2f}')
+else:
+    print('0')
+" """,
+                '--quiet'
+            ]
+            
+            # Run SSH command asynchronously
+            process = await asyncio.create_subprocess_exec(
+                *ssh_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy()
+            )
+            
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+                
+                if process.returncode == 0:
+                    cpu_str = stdout.decode().strip()
+                    try:
+                        cpu_usage = float(cpu_str)
+                        logger.debug(f"Retrieved CPU usage via SSH for {instance_name}: {cpu_usage}%")
+                        return cpu_usage
+                    except ValueError:
+                        logger.debug(f"Could not parse CPU usage from SSH output: {cpu_str}")
+                        return 0.0
+                else:
+                    error_msg = stderr.decode() if stderr else "Unknown error"
+                    logger.debug(f"SSH command failed for {instance_name}: {error_msg}")
+                    return 0.0
+            except asyncio.TimeoutExpired:
+                process.kill()
+                logger.debug(f"SSH command timed out for {instance_name}")
+                return 0.0
+                
+        except Exception as e:
+            logger.debug(f"Error getting CPU usage via SSH for {instance_name}: {e}")
+            return 0.0
+    
     async def _get_compute_metrics(self, instance_name: str) -> Dict[str, Any]:
-        """Get Compute Engine instance metrics from Cloud Monitoring."""
+        """Get Compute Engine instance metrics from SSH (primary) and Cloud Monitoring (fallback)."""
         metrics = {
             "cpu_usage_percent": 0.0,
             "memory_usage_percent": 0.0,
             "disk_usage_percent": 0.0,
         }
         
+        project_id = self.project_id
+        zone = settings.GCP_ZONE
+        
+        # Try SSH first for real-time CPU usage (faster and more accurate)
+        try:
+            cpu_ssh = await self._get_cpu_usage_via_ssh(instance_name, zone)
+            if cpu_ssh > 0:
+                metrics["cpu_usage_percent"] = cpu_ssh
+                logger.debug(f"Using SSH CPU usage for {instance_name}: {cpu_ssh}%")
+        except Exception as e:
+            logger.debug(f"SSH CPU retrieval failed for {instance_name}: {e}")
+        
+        # Fallback to Cloud Monitoring for CPU and get memory/disk
+        # Only query Cloud Monitoring if SSH didn't return CPU (to avoid unnecessary API calls)
         try:
             client = self._get_monitoring_client()
             if not client:
+                logger.debug(f"Cloud Monitoring client not available for {instance_name}")
                 return metrics
             
-            # TODO: Implement Cloud Monitoring API calls to get CPU, memory, disk metrics
-            # This requires querying time series data from Cloud Monitoring
+            # Get metrics from the last 3 minutes (Cloud Monitoring typically has 1-2 min delay)
+            # Using 3 minutes to ensure we capture recent data
+            from datetime import datetime, timedelta
+            now = datetime.utcnow()
+            three_minutes_ago = now - timedelta(minutes=3)
+            
+            project_name = f"projects/{project_id}"
+            
+            # Query CPU utilization (only if SSH didn't work)
+            if metrics["cpu_usage_percent"] == 0.0:
+                try:
+                    # Use instance_id instead of instance_name and zone for better compatibility
+                    cpu_filter = (
+                        f'resource.type="gce_instance" '
+                        f'AND resource.labels.instance_id="{instance_name}" '
+                        f'AND metric.type="compute.googleapis.com/instance/cpu/utilization"'
+                    )
+                    
+                    cpu_request = {
+                        "name": project_name,
+                        "filter": cpu_filter,
+                        "interval": {
+                            "end_time": now.isoformat() + "Z",
+                            "start_time": three_minutes_ago.isoformat() + "Z",
+                        },
+                        "aggregation": {
+                            "alignment_period": {"seconds": 60},  # 1 minute alignment for faster detection
+                            "per_series_aligner": "ALIGN_MEAN",
+                        },
+                    }
+                    
+                    cpu_response = client.list_time_series(request=cpu_request)
+                    cpu_values = []
+                    for series in cpu_response:
+                        for point in series.points:
+                            # CPU utilization is already a ratio (0.0 to 1.0), convert to percentage
+                            if hasattr(point.value, 'double_value'):
+                                cpu_values.append(point.value.double_value)
+                            elif hasattr(point.value, 'int64_value'):
+                                # Some metrics might be int64
+                                cpu_values.append(float(point.value.int64_value))
+                    
+                    if cpu_values:
+                        # Average the values and convert to percentage (values are 0.0-1.0)
+                        avg_cpu = sum(cpu_values) / len(cpu_values)
+                        cpu_monitoring = round(avg_cpu * 100, 2)
+                        # Only use Cloud Monitoring if SSH didn't return a value
+                        if metrics["cpu_usage_percent"] == 0.0:
+                            metrics["cpu_usage_percent"] = cpu_monitoring
+                            logger.debug(f"Using Cloud Monitoring CPU for {instance_name}: {cpu_monitoring}% ({len(cpu_values)} data points)")
+                        else:
+                            logger.debug(f"Cloud Monitoring CPU for {instance_name}: {cpu_monitoring}% (using SSH value: {metrics['cpu_usage_percent']}%)")
+                    else:
+                        logger.debug(f"No CPU metrics found in Cloud Monitoring for {instance_name} in the last 3 minutes")
+                except Exception as e:
+                    # Only log as debug since SSH is the primary method and this is just a fallback
+                    logger.debug(f"Cloud Monitoring CPU query failed for {instance_name} (this is expected if SSH is working): {e}")
+            
+            # Query memory utilization
+            try:
+                memory_filter = (
+                    f'resource.type="gce_instance" '
+                    f'AND resource.labels.instance_id="{instance_name}" '
+                    f'AND metric.type="compute.googleapis.com/instance/memory/utilization"'
+                )
+                
+                memory_request = {
+                    "name": project_name,
+                    "filter": memory_filter,
+                    "interval": {
+                        "end_time": now.isoformat() + "Z",
+                        "start_time": three_minutes_ago.isoformat() + "Z",
+                    },
+                    "aggregation": {
+                        "alignment_period": {"seconds": 300},
+                        "per_series_aligner": "ALIGN_MEAN",
+                    },
+                }
+                
+                memory_response = client.list_time_series(request=memory_request)
+                memory_values = []
+                for series in memory_response:
+                    for point in series.points:
+                        memory_values.append(point.value.double_value)
+                
+                if memory_values:
+                    metrics["memory_usage_percent"] = round(sum(memory_values) / len(memory_values) * 100, 2)
+            except Exception as e:
+                logger.debug(f"Error getting memory metrics for {instance_name}: {e}")
+            
+            # Query disk utilization
+            try:
+                disk_filter = (
+                    f'resource.type="gce_instance" '
+                    f'AND resource.labels.instance_id="{instance_name}" '
+                    f'AND metric.type="compute.googleapis.com/instance/disk/utilization"'
+                )
+                
+                disk_request = {
+                    "name": project_name,
+                    "filter": disk_filter,
+                    "interval": {
+                        "end_time": now.isoformat() + "Z",
+                        "start_time": three_minutes_ago.isoformat() + "Z",
+                    },
+                    "aggregation": {
+                        "alignment_period": {"seconds": 300},
+                        "per_series_aligner": "ALIGN_MEAN",
+                    },
+                }
+                
+                disk_response = client.list_time_series(request=disk_request)
+                disk_values = []
+                for series in disk_response:
+                    for point in series.points:
+                        disk_values.append(point.value.double_value)
+                
+                if disk_values:
+                    metrics["disk_usage_percent"] = round(sum(disk_values) / len(disk_values) * 100, 2)
+            except Exception as e:
+                logger.debug(f"Error getting disk metrics for {instance_name}: {e}")
             
         except Exception as e:
             logger.debug(f"Error getting Compute Engine metrics for {instance_name}: {e}")

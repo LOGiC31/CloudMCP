@@ -32,18 +32,21 @@ function App() {
   }, []); // Only run once on mount
 
   // Poll for status updates only (lightweight)
+  // Stop polling when LLM fix is in progress to reduce API load
   useEffect(() => {
     if (!loading) {
       // Start polling for status updates
+      // Stop polling when: isPolling is true OR fix is in progress (fixTriggered but not completed)
       const statusInterval = setInterval(() => {
-        if (!isPolling) {
+        const shouldPoll = !isPolling && !(validationState.fixTriggered && !validationState.fixCompleted);
+        if (shouldPoll) {
           updateResourceStatus();
         }
       }, 30000); // Poll every 30 seconds for status updates
       
       return () => clearInterval(statusInterval);
     }
-  }, [loading, isPolling]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loading, isPolling, validationState.fixTriggered, validationState.fixCompleted]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadResourcesAndTools = async () => {
     try {
@@ -137,17 +140,21 @@ function App() {
     }
   };
 
-  const handleFailureIntroduced = async (failureType) => {
+  const handleFailureIntroduced = async (failureType, resourceName = null) => {
     setIsPolling(true);
     
     // Wait for status to update (longer for database connections, Redis needs time to fill memory)
-    // Redis needs more time because it has to fill memory to trigger DEGRADED status
-    const initialWait = failureType === 'database' ? 10000 : failureType === 'redis' ? 12000 : failureType === 'nginx' ? 10000 : 10000;
+    // For GCP compute CPU stress, wait a bit longer for metrics to update
+    const initialWait = failureType === 'database' ? 10000 : 
+                       failureType === 'redis' ? 12000 : 
+                       failureType === 'nginx' ? 10000 : 
+                       failureType === 'compute' ? 15000 : // GCP compute needs more time for CPU metrics
+                       10000;
     await new Promise(resolve => setTimeout(resolve, initialWait));
     
     // Smart polling: check status until we see degraded resources or timeout
     let attempts = 0;
-    const maxAttempts = 10; // 10 attempts = ~20 seconds max
+    const maxAttempts = failureType === 'compute' ? 15 : 10; // More attempts for GCP (30 seconds)
     const pollInterval = 2000; // Check every 2 seconds
     
     const pollForStatus = async () => {
@@ -184,15 +191,22 @@ function App() {
         
         const degraded = newResources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED');
         
-        // Check if expected resources are degraded
-        const expectedResources = failureType === 'redis' ? ['redis'] :
-                                 failureType === 'database' ? ['postgres'] :
-                                 failureType === 'nginx' ? ['nginx'] :
-                                 ['redis', 'postgres', 'nginx'];
+        // Determine expected resources based on failure type and resource name
+        let expectedResources;
+        if (resourceName) {
+          // GCP failure: check the specific resource name
+          expectedResources = [resourceName.toLowerCase()];
+        } else {
+          // Local failure: use type-based mapping
+          expectedResources = failureType === 'redis' ? ['redis'] :
+                             failureType === 'database' ? ['postgres'] :
+                             failureType === 'nginx' ? ['nginx'] :
+                             ['redis', 'postgres', 'nginx'];
+        }
         
         const foundDegraded = degraded.filter(r => {
           const nameLower = r.name.toLowerCase();
-          return expectedResources.some(expected => nameLower.includes(expected.toLowerCase()));
+          return expectedResources.some(expected => nameLower === expected || nameLower.includes(expected));
         });
         
         if (foundDegraded.length > 0 || attempts >= maxAttempts) {
@@ -209,6 +223,7 @@ function App() {
             ...prev,
             failureIntroduced: true,
             failureType: failureType,
+            resourceName: resourceName, // Store resource name for GCP validation
             degradedResources: foundDegraded.map(r => r.name),
             degradedStateSnapshot: degradedSnapshot, // Store snapshot for validation (may be empty if timeout)
           }));
@@ -232,6 +247,7 @@ function App() {
             ...prev,
             failureIntroduced: true,
             failureType: failureType,
+            resourceName: resourceName, // Store resource name for GCP validation
             degradedResources: [],
             degradedStateSnapshot: {}, // Empty snapshot on error/timeout
           }));
@@ -243,57 +259,93 @@ function App() {
     pollForStatus();
   };
 
-  const handleFixTriggered = async () => {
-    setValidationState(prev => ({
-      ...prev,
-      fixTriggered: true,
-    }));
+  const handleFixTriggered = async (executionStatus = null) => {
+    // Check if this is the first call (fix starting) or second call (fix completed)
+    // First call: executionStatus is null/undefined
+    // Second call: executionStatus is provided (SUCCESS, FAILED, TIMEOUT, ERROR, UNKNOWN)
+    const isFirstCall = executionStatus === null || executionStatus === undefined;
     
-    setIsPolling(true);
-    
-    // Wait a bit for fix to be applied (fix is already complete when this is called)
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Check status once - fix should already be complete
-    const { resourceService } = await import('./services/api');
-    try {
-      const statusRes = await resourceService.getStatusUpdates();
-      const statusUpdates = statusRes.data;
-      
-      // Update only status for existing resources
-      setResources(prevResources => {
-        return prevResources.map(prevResource => {
-          const statusUpdate = statusUpdates.find(su => su.id === prevResource.id || su.name === prevResource.name);
-          if (statusUpdate) {
-            return {
-              ...prevResource,
-              status: statusUpdate.status,
-              metrics: statusUpdate.metrics,
-              last_updated: statusUpdate.last_updated,
-            };
-          }
-          return prevResource;
-        });
-      });
-      
-      // Get updated resources for validation
-      const newResources = statusUpdates.map(su => {
-        const existing = resources.find(r => r.id === su.id || r.name === su.name);
-        return existing ? { ...existing, ...su } : su;
-      });
-      
-      const allHealthy = newResources.length > 0 && newResources.every(r => r.status === 'HEALTHY');
-      
+    if (isFirstCall) {
+      // First call: Mark fix as triggered - this will stop status polling
+      console.log('[Fix] First call: Stopping status polling');
       setValidationState(prev => ({
         ...prev,
-        fixCompleted: allHealthy,
-        // Clear degraded resources when fix completes successfully
-        degradedResources: allHealthy ? [] : prev.degradedResources,
+        fixTriggered: true,
+        fixCompleted: false, // Reset completion status
       }));
-    } catch (error) {
-      console.error('Error checking fix status:', error);
-    } finally {
-      setIsPolling(false);
+      
+      // Stop status polling during LLM processing
+      setIsPolling(true);
+    } else {
+      // Second call: Fix has completed (executionStatus is provided)
+      console.log('[Fix] Second call: Fix completed with status:', executionStatus);
+      
+      // Wait a bit for fix to be applied and status to update
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Check status once - fix should already be complete
+      const { resourceService } = await import('./services/api');
+      try {
+        console.log('[Fix] Fetching updated resource status...');
+        const statusRes = await resourceService.getStatusUpdates();
+        const statusUpdates = statusRes.data;
+        
+        // Update only status for existing resources
+        setResources(prevResources => {
+          return prevResources.map(prevResource => {
+            const statusUpdate = statusUpdates.find(su => su.id === prevResource.id || su.name === prevResource.name);
+            if (statusUpdate) {
+              return {
+                ...prevResource,
+                status: statusUpdate.status,
+                metrics: statusUpdate.metrics,
+                last_updated: statusUpdate.last_updated,
+              };
+            }
+            return prevResource;
+          });
+        });
+        
+        // Get updated resources for validation
+        const newResources = statusUpdates.map(su => {
+          const existing = resources.find(r => r.id === su.id || r.name === su.name);
+          return existing ? { ...existing, ...su } : su;
+        });
+        
+        const allHealthy = newResources.length > 0 && newResources.every(r => 
+          r.status === 'HEALTHY' || r.status === 'READY' || r.status === 'RUNNING' || r.status === 'RUNNABLE'
+        );
+        
+        console.log('[Fix] Resources healthy:', allHealthy, 'Status updates:', statusUpdates.length);
+        
+        // Mark fix as completed (execution is done, regardless of success/failure)
+        // This will update validation panel and resume status polling
+        setValidationState(prev => {
+          const newState = {
+            ...prev,
+            fixCompleted: true, // Fix execution is complete (SUCCESS, FAILED, or TIMEOUT)
+            // Clear degraded resources when fix completes successfully
+            degradedResources: allHealthy ? [] : prev.degradedResources,
+          };
+          console.log('[Fix] Setting fixCompleted to true, new state:', newState);
+          return newState;
+        });
+      } catch (error) {
+        console.error('[Fix] Error checking fix status:', error);
+        // Even if status check fails, mark fix as completed so polling resumes
+        setValidationState(prev => {
+          const newState = {
+            ...prev,
+            fixCompleted: true,
+          };
+          console.log('[Fix] Error case: Setting fixCompleted to true, new state:', newState);
+          return newState;
+        });
+      } finally {
+        // Resume status polling after fix completes (always, regardless of success/failure)
+        console.log('[Fix] Resuming status polling');
+        setIsPolling(false);
+      }
     }
   };
   
@@ -448,6 +500,7 @@ function App() {
                 onFailureIntroduced={handleFailureIntroduced}
                 onRefresh={handleRefreshResources}
                 gcpMode={true}
+                selectedResource={selectedResource}
               />
               <ValidationPanel
                 validationState={validationState}
