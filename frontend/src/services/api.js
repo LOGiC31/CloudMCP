@@ -10,9 +10,9 @@ const api = axios.create({
 });
 
 export const resourceService = {
-  getAll: () => api.get('/api/resources'),
+  getAll: (includeGcp = true) => api.get('/api/resources', { params: { include_gcp: includeGcp } }),
   getStatus: (resourceId) => api.get(`/api/resources/${resourceId}`),
-  getStatusUpdates: () => api.get('/api/resources/status'), // Lightweight status-only endpoint
+  getStatusUpdates: (includeGcp = true) => api.get('/api/resources/status', { params: { include_gcp: includeGcp } }), // Lightweight status-only endpoint
 };
 
 export const logService = {

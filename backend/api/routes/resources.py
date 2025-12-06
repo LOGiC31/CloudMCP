@@ -23,12 +23,12 @@ def get_resource_monitor():
 
 
 @router.get("", response_model=List[Dict[str, Any]])
-async def get_all_resources(filter_excluded: bool = True):
+async def get_all_resources(filter_excluded: bool = True, include_gcp: bool = True):
     """Get all resources and their status. Use this for initial load or when resource list changes."""
     try:
-        logger.info(f"Getting all resources (filter_excluded={filter_excluded})")
+        logger.info(f"Getting all resources (filter_excluded={filter_excluded}, include_gcp={include_gcp})")
         resource_monitor = get_resource_monitor()
-        resources = await resource_monitor.get_all_resources(filter_excluded=filter_excluded)
+        resources = await resource_monitor.get_all_resources(filter_excluded=filter_excluded, include_gcp=include_gcp)
         logger.info(f"Retrieved {len(resources)} resources: {[r['name'] for r in resources]}")
         return resources
     except Exception as e:
@@ -37,12 +37,12 @@ async def get_all_resources(filter_excluded: bool = True):
 
 
 @router.get("/status", response_model=List[Dict[str, Any]])
-async def get_resources_status(filter_excluded: bool = True):
+async def get_resources_status(filter_excluded: bool = True, include_gcp: bool = True):
     """Get only resource status updates (lightweight, for polling). Returns minimal data: id, name, status, metrics."""
     try:
-        logger.debug(f"Getting resource status updates (filter_excluded={filter_excluded})")
+        logger.debug(f"Getting resource status updates (filter_excluded={filter_excluded}, include_gcp={include_gcp})")
         resource_monitor = get_resource_monitor()
-        resources = await resource_monitor.get_all_resources(filter_excluded=filter_excluded)
+        resources = await resource_monitor.get_all_resources(filter_excluded=filter_excluded, include_gcp=include_gcp)
         
         # Return only status-relevant fields (minimal payload)
         status_updates = [

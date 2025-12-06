@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = "gemini-2.5-flash"
     
+    # GCP Configuration
+    GCP_PROJECT_ID: Optional[str] = os.getenv("GCP_PROJECT_ID", None)
+    GCP_ZONE: str = os.getenv("GCP_ZONE", "us-central1-a")
+    GCP_REGION: str = os.getenv("GCP_REGION", "us-central1")
+    GCP_SERVICE_ACCOUNT_KEY_PATH: Optional[str] = os.getenv("GCP_SERVICE_ACCOUNT_KEY_PATH", None)
+    GCP_ENABLED: bool = os.getenv("GCP_ENABLED", "false").lower() == "true"
+    
     # Docker Settings
     DOCKER_SOCKET: str = os.getenv("DOCKER_SOCKET", "unix:///var/run/docker.sock")
     

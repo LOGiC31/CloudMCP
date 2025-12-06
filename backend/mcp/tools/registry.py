@@ -26,6 +26,22 @@ from backend.mcp.tools.nginx_tools import (
     NginxClearConnectionsTool,
     NginxInfoTool
 )
+from backend.mcp.tools.gcp_compute_tools import (
+    GCPComputeRestartInstanceTool,
+    GCPComputeScaleInstanceTool,
+    GCPComputeStartInstanceTool,
+    GCPComputeStopInstanceTool
+)
+from backend.mcp.tools.gcp_sql_tools import (
+    GCPSQLRestartInstanceTool,
+    GCPSQLScaleTierTool,
+    GCPSQLKillConnectionsTool
+)
+from backend.mcp.tools.gcp_redis_tools import (
+    GCPRedisFlushTool,
+    GCPRedisRestartTool,
+    GCPRedisScaleMemoryTool
+)
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -66,7 +82,25 @@ class MCPToolRegistry:
         self.register(NginxClearConnectionsTool())
         self.register(NginxInfoTool())
         
-        logger.info(f"Registered {len(self._tools)} MCP tools")
+        # GCP Compute Engine tools (only if GCP is enabled)
+        from backend.config import settings
+        if settings.GCP_ENABLED:
+            self.register(GCPComputeRestartInstanceTool())
+            self.register(GCPComputeScaleInstanceTool())
+            self.register(GCPComputeStartInstanceTool())
+            self.register(GCPComputeStopInstanceTool())
+            
+            # GCP Cloud SQL tools
+            self.register(GCPSQLRestartInstanceTool())
+            self.register(GCPSQLScaleTierTool())
+            self.register(GCPSQLKillConnectionsTool())
+            
+            # GCP Memorystore (Redis) tools
+            self.register(GCPRedisFlushTool())
+            self.register(GCPRedisRestartTool())
+            self.register(GCPRedisScaleMemoryTool())
+        
+        logger.info(f"Registered {len(self._tools)} MCP tools (GCP enabled: {settings.GCP_ENABLED})")
     
     def register(self, tool: MCPTool):
         """Register a tool."""

@@ -4,9 +4,12 @@ import './ResourceDashboard.css';
 
 const ResourceDashboard = ({ resources, selectedResource, onResourceSelect, activeResources = [] }) => {
   const getStatusIcon = (status) => {
+    // Treat READY, RUNNING, RUNNABLE as healthy
+    const healthyStatuses = ['HEALTHY', 'READY', 'RUNNING', 'RUNNABLE'];
+    if (healthyStatuses.includes(status)) {
+      return <CheckCircle size={20} className="status-icon healthy" />;
+    }
     switch (status) {
-      case 'HEALTHY':
-        return <CheckCircle size={20} className="status-icon healthy" />;
       case 'DEGRADED':
         return <AlertCircle size={20} className="status-icon degraded" />;
       case 'FAILED':
@@ -28,9 +31,12 @@ const ResourceDashboard = ({ resources, selectedResource, onResourceSelect, acti
   };
 
   const getStatusColor = (status) => {
+    // Treat READY, RUNNING, RUNNABLE as healthy (green)
+    const healthyStatuses = ['HEALTHY', 'READY', 'RUNNING', 'RUNNABLE'];
+    if (healthyStatuses.includes(status)) {
+      return 'var(--accent-success)';
+    }
     switch (status) {
-      case 'HEALTHY':
-        return 'var(--accent-success)';
       case 'DEGRADED':
         return 'var(--accent-warning)';
       case 'FAILED':
@@ -38,6 +44,24 @@ const ResourceDashboard = ({ resources, selectedResource, onResourceSelect, acti
       default:
         return 'var(--text-secondary)';
     }
+  };
+
+  const getStatusClassName = (status) => {
+    // Map status to CSS class name
+    // Treat READY, RUNNING, RUNNABLE as healthy
+    const healthyStatuses = ['HEALTHY', 'READY', 'RUNNING', 'RUNNABLE'];
+    if (healthyStatuses.includes(status)) {
+      return 'healthy';
+    }
+    const unhealthyStatuses = ['DEGRADED', 'UPDATING', 'CREATING', 'STAGING', 'PROVISIONING', 'PENDING_CREATE', 'PENDING_UPDATE'];
+    if (unhealthyStatuses.includes(status)) {
+      return 'degraded';
+    }
+    const failedStatuses = ['FAILED', 'TERMINATED', 'STOPPING', 'MAINTENANCE', 'DELETING', 'REPAIRING'];
+    if (failedStatuses.includes(status)) {
+      return 'failed';
+    }
+    return status.toLowerCase();
   };
 
   const formatMetrics = (resource) => {
@@ -80,7 +104,7 @@ const ResourceDashboard = ({ resources, selectedResource, onResourceSelect, acti
           return (
             <div
               key={resource.id || resource.name}
-              className={`resource-card ${resource.status.toLowerCase()} ${isSelected ? 'selected' : ''} ${isActive ? 'active-fixing' : ''}`}
+              className={`resource-card ${getStatusClassName(resource.status)} ${isSelected ? 'selected' : ''} ${isActive ? 'active-fixing' : ''}`}
               onClick={() => onResourceSelect(resource)}
             >
               <div className="resource-header">

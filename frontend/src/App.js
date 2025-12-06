@@ -69,20 +69,28 @@ function App() {
       const statusRes = await resourceService.getStatusUpdates();
       const statusUpdates = statusRes.data;
       
-      // Update only status and metrics for existing resources
+      // Update status and metrics for existing resources, and add any new resources
       setResources(prevResources => {
-        const updatedResources = prevResources.map(prevResource => {
-          const statusUpdate = statusUpdates.find(su => su.id === prevResource.id || su.name === prevResource.name);
-          if (statusUpdate) {
-            return {
-              ...prevResource,
+        const resourceMap = new Map(prevResources.map(r => [r.id || r.name, r]));
+        
+        // Update existing resources and add new ones
+        statusUpdates.forEach(statusUpdate => {
+          const key = statusUpdate.id || statusUpdate.name;
+          if (resourceMap.has(key)) {
+            // Update existing resource
+            resourceMap.set(key, {
+              ...resourceMap.get(key),
               status: statusUpdate.status,
               metrics: statusUpdate.metrics,
               last_updated: statusUpdate.last_updated,
-            };
+            });
+          } else {
+            // Add new resource (e.g., newly discovered GCP resource)
+            resourceMap.set(key, statusUpdate);
           }
-          return prevResource;
         });
+        
+        const updatedResources = Array.from(resourceMap.values());
         
         // Update validation state based on status changes
         updateValidationState(updatedResources);
@@ -337,34 +345,44 @@ function App() {
     );
   }
 
+  // Filter resources by type for badges
+  const localResources = resources.filter(r => !r.type || !r.type.startsWith('gcp-'));
+  const gcpResources = resources.filter(r => r.type && r.type.startsWith('gcp-'));
+  
   const tabs = [
     {
       id: 'local',
       label: 'Local',
       icon: '💻',
-      badge: resources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED').length || null,
+      badge: localResources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED').length || null,
     },
     {
       id: 'gcp',
       label: 'GCP',
       icon: '☁️',
+      badge: gcpResources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED').length || null,
     },
   ];
 
-  const renderLocalTab = () => (
-    <div className="app-container">
-      <div className="app-sidebar">
-        <ResourceDashboard
-          resources={resources}
-          selectedResource={selectedResource}
-          onResourceSelect={handleResourceSelect}
-          activeResources={validationState.fixTriggered ? validationState.degradedResources : []}
-        />
-        <MCPToolsPanel
-          tools={tools}
-          selectedResource={selectedResource}
-        />
-      </div>
+  const renderLocalTab = () => {
+    // Filter local resources (exclude GCP)
+    const localResourcesFiltered = resources.filter(r => !r.type || !r.type.startsWith('gcp-'));
+    const localTools = tools.filter(t => !t.name || !t.name.startsWith('gcp_'));
+    
+    return (
+      <div className="app-container">
+        <div className="app-sidebar">
+          <ResourceDashboard
+            resources={localResourcesFiltered}
+            selectedResource={selectedResource}
+            onResourceSelect={handleResourceSelect}
+            activeResources={validationState.fixTriggered ? validationState.degradedResources : []}
+          />
+          <MCPToolsPanel
+            tools={localTools}
+            selectedResource={selectedResource}
+          />
+        </div>
       <div className="app-main">
         <FailureControls
           onFailureIntroduced={handleFailureIntroduced}
@@ -386,20 +404,71 @@ function App() {
         <FixHistory refreshKey={fixHistoryRefreshKey} />
       </div>
     </div>
-  );
+    );
+  };
 
-  const renderGCPTab = () => (
-    <div className="gcp-tab-placeholder">
-      <div className="placeholder-content">
-        <div className="placeholder-icon">☁️</div>
-        <h2>Google Cloud Platform</h2>
-        <p>GCP resource management coming soon...</p>
-        <p className="placeholder-subtitle">
-          This tab will display GCP resources, their status, and allow LLM-based fixes for cloud infrastructure.
-        </p>
+  const renderGCPTab = () => {
+    // Filter GCP resources (type starts with 'gcp-')
+    const gcpResources = resources.filter(r => r.type && r.type.startsWith('gcp-'));
+    const gcpTools = tools.filter(t => t.name && t.name.startsWith('gcp_'));
+    
+    return (
+      <div className="app-container">
+        <div className="app-sidebar">
+          <ResourceDashboard
+            resources={gcpResources}
+            selectedResource={selectedResource}
+            onResourceSelect={handleResourceSelect}
+            activeResources={validationState.fixTriggered ? validationState.degradedResources : []}
+          />
+          <MCPToolsPanel
+            tools={gcpTools}
+            selectedResource={selectedResource}
+          />
+        </div>
+        <div className="app-main">
+          {gcpResources.length === 0 ? (
+            <div className="gcp-tab-placeholder">
+              <div className="placeholder-content">
+                <div className="placeholder-icon">☁️</div>
+                <h2>Google Cloud Platform</h2>
+                <p>No GCP resources found.</p>
+                <p className="placeholder-subtitle">
+                  To enable GCP resources:
+                  <br />1. Set GCP_PROJECT_ID in backend .env
+                  <br />2. Set GCP_ENABLED=true
+                  <br />3. Configure service account credentials
+                  <br />4. Deploy resources to GCP
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <FailureControls
+                onFailureIntroduced={handleFailureIntroduced}
+                onRefresh={handleRefreshResources}
+                gcpMode={true}
+              />
+              <ValidationPanel
+                validationState={validationState}
+                resources={gcpResources}
+                onReset={handleResetValidation}
+                onClearAll={handleClearAll}
+              />
+              <LLMChat
+                selectedResource={selectedResource}
+                onFixTriggered={handleFixTriggered}
+                degradedResources={validationState.degradedResources}
+                resources={gcpResources}
+                fixTriggered={validationState.fixTriggered}
+              />
+              <FixHistory refreshKey={fixHistoryRefreshKey} />
+            </>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="app">

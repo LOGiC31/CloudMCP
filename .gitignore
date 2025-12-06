@@ -29,3 +29,12 @@ uv.lock
 # Evaluation database
 evaluation.db
 *.db
+
+# GCP Service Account Keys (NEVER commit these!)
+gcp-service-account-key.json
+*-service-account-key.json
+# Allow package.json and other config JSON files
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.*.json

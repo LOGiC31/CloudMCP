@@ -7,6 +7,13 @@ pydantic-settings>=2.5.2
 # Google Gemini API
 google-genai==0.2.2
 
+# GCP client libraries
+google-cloud-compute>=1.14.0
+google-cloud-redis>=2.13.0
+google-cloud-monitoring>=2.15.0
+google-auth>=2.23.0
+google-api-python-client>=2.100.0  # Used for Cloud SQL Admin API
+
 # Docker
 docker==7.0.0
 

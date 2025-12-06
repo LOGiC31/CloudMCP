@@ -75,7 +75,9 @@ class MCPOrchestrator:
                 resource_status = await self.resource_monitor.get_all_resources(filter_excluded=False)
             
             logger.info(f"Found {len(resource_status)} resources: {[r['name'] for r in resource_status]}")
-            degraded_resources = [r for r in resource_status if r.get('status') in ['DEGRADED', 'FAILED']]
+            # Include both normalized and actual GCP state names
+            unhealthy_statuses = ['DEGRADED', 'FAILED', 'TERMINATED', 'STOPPING', 'MAINTENANCE', 'DELETING', 'REPAIRING']
+            degraded_resources = [r for r in resource_status if r.get('status') in unhealthy_statuses]
             if degraded_resources:
                 logger.warning(f"Found {len(degraded_resources)} degraded/failed resources: {[r['name'] for r in degraded_resources]}")
             
@@ -143,12 +145,25 @@ class MCPOrchestrator:
                             logger.warning(f"Tool {tool_name} failed: {result.get('message')}")
                     
                     # Step 4: Verify fix
-                    # Wait longer for Nginx/connection-related fixes to take effect
+                    # Wait longer for operations that take time to complete
                     tools_used = [step.get("tool_name") for step in fix_plan.get("steps", [])]
+                    # GCP Redis scaling: can take several minutes (instance goes into UPDATING state)
                     # Nginx connection fixes: 
                     # - nginx_scale_connections: needs time for config reload and status check
                     # - nginx_clear_connections: already waits internally, but we need extra time for status to stabilize
-                    wait_time = 10 if any("nginx" in tool.lower() and "scale" in tool.lower() for tool in tools_used) else (15 if any("nginx" in tool.lower() and "clear" in tool.lower() for tool in tools_used) else (8 if any("nginx" in tool.lower() for tool in tools_used) else (5 if any("connection" in tool.lower() for tool in tools_used) else 2)))
+                    if any("gcp_redis" in tool.lower() and "scale" in tool.lower() for tool in tools_used):
+                        wait_time = 120  # 2 minutes for GCP Redis scaling (operation completes but instance may still be UPDATING)
+                        logger.info(f"Waiting {wait_time} seconds for GCP Redis scaling to complete (tools: {tools_used})")
+                    elif any("nginx" in tool.lower() and "scale" in tool.lower() for tool in tools_used):
+                        wait_time = 10
+                    elif any("nginx" in tool.lower() and "clear" in tool.lower() for tool in tools_used):
+                        wait_time = 15
+                    elif any("nginx" in tool.lower() for tool in tools_used):
+                        wait_time = 8
+                    elif any("connection" in tool.lower() for tool in tools_used):
+                        wait_time = 5
+                    else:
+                        wait_time = 2
                     logger.info(f"Waiting {wait_time} seconds for fix to take effect (tools: {tools_used})")
                     await asyncio.sleep(wait_time)
                     updated_resource_status = await self.resource_monitor.get_all_resources(filter_excluded=False)
@@ -165,9 +180,36 @@ class MCPOrchestrator:
                         before_status = before_metric.get("status", "UNKNOWN")
                         after_status = after_metric.get("status", "UNKNOWN")
                         
+                        # Special handling for GCP Redis scaling: if instance is UPDATING, that's expected progress
+                        # Check if we just scaled this Redis instance
+                        if "redis" in resource_name.lower() and any("gcp_redis_scale_memory" in str(step.get("tool_name", "")).lower() for step in fix_plan.get("steps", [])):
+                            # If status is UPDATING after scaling, that's expected progress (not a failure)
+                            if after_status == "UPDATING":
+                                logger.info(f"Redis instance {resource_name} is UPDATING after scaling. This is expected progress.")
+                                continue  # Don't count this as a failure
+                            # Also check if it was FAILED/UNHEALTHY before and is now UPDATING (progress)
+                            if before_status in ["FAILED", "DEGRADED"] and after_status == "UPDATING":
+                                logger.info(f"Redis instance {resource_name} is UPDATING after scaling (progress from {before_status} to UPDATING). This is expected.")
+                                continue  # Don't count this as a failure
+                            # Also, if tool result indicates UPDATING is expected, don't count as failure
+                            tool_result = next((r for r in execution_results if "redis" in str(r.get("result", {})).lower()), None)
+                            if tool_result and tool_result.get("result", {}).get("data", {}).get("current_state") == "UPDATING":
+                                logger.info(f"Redis instance {resource_name} is UPDATING after scaling (as reported by tool). This is expected.")
+                                continue  # Don't count this as a failure
+                        
                         # If resource was unhealthy before, check if it's healthy now
-                        if before_status in ["DEGRADED", "FAILED"]:
-                            if after_status not in ["HEALTHY"]:
+                        # For GCP resources, READY = healthy, UPDATING/CREATING = in progress (not failure)
+                        unhealthy_states = ["DEGRADED", "FAILED", "TERMINATED", "STOPPING", "MAINTENANCE"]
+                        healthy_states = ["HEALTHY", "READY", "RUNNING", "RUNNABLE"]
+                        in_progress_states = ["UPDATING", "CREATING", "STAGING", "PROVISIONING", "PENDING_CREATE", "PENDING_UPDATE"]
+                        
+                        if before_status in unhealthy_states:
+                            # If it's now in progress (UPDATING, CREATING), that's progress, not failure
+                            if after_status in in_progress_states:
+                                logger.info(f"Resource {resource_name} is {after_status} (progress from {before_status}). This is expected.")
+                                continue  # Don't count this as a failure
+                            # If it's not healthy or in progress, it's still a problem
+                            if after_status not in healthy_states:
                                 issues_resolved = False
                                 failed_resources.append({
                                     "resource": resource_name,
@@ -175,6 +217,14 @@ class MCPOrchestrator:
                                     "after_status": after_status,
                                     "reason": f"Status still {after_status} after fix"
                                 })
+                        elif before_status in in_progress_states:
+                            # If it was in progress and is now healthy, that's success
+                            if after_status in healthy_states:
+                                continue  # Success
+                            # If it's still in progress, that's okay (might take time)
+                            if after_status in in_progress_states:
+                                logger.info(f"Resource {resource_name} is still {after_status} (was {before_status}). This is expected.")
+                                continue  # Don't count as failure
                     
                     success = tool_success and issues_resolved
                     

@@ -10,8 +10,24 @@ const MCPToolsPanel = ({ tools, selectedResource }) => {
     }
 
     const resourceName = selectedResource.name.toLowerCase();
+    const resourceType = selectedResource.type ? selectedResource.type.toLowerCase() : '';
     return tools.filter((tool) => {
       const toolName = tool.name.toLowerCase();
+      
+      // GCP resource matching
+      if (resourceType.startsWith('gcp-')) {
+        if (resourceType.includes('sql') || resourceName.includes('sql')) {
+          return toolName.includes('gcp_sql');
+        } else if (resourceType.includes('redis') || resourceName.includes('redis')) {
+          return toolName.includes('gcp_redis');
+        } else if (resourceType.includes('compute') || resourceName.includes('vm') || resourceName.includes('compute')) {
+          return toolName.includes('gcp_compute');
+        }
+        // For other GCP resources, show all GCP tools
+        return toolName.startsWith('gcp_');
+      }
+      
+      // Local resource matching
       if (resourceName.includes('postgres') || resourceName.includes('database')) {
         return toolName.includes('postgres');
       } else if (resourceName.includes('redis')) {
@@ -26,13 +42,13 @@ const MCPToolsPanel = ({ tools, selectedResource }) => {
   };
 
   const getToolIcon = (toolName) => {
-    if (toolName.includes('postgres')) {
+    if (toolName.includes('postgres') || toolName.includes('sql')) {
       return <Database size={18} />;
     } else if (toolName.includes('redis')) {
       return <HardDrive size={18} />;
     } else if (toolName.includes('nginx')) {
       return <Server size={18} />;
-    } else if (toolName.includes('docker')) {
+    } else if (toolName.includes('docker') || toolName.includes('compute')) {
       return <Server size={18} />;
     }
     return <Wrench size={18} />;

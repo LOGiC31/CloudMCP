@@ -261,6 +261,10 @@ class LLMClient:
 5. **IMPORTANT: Tool Selection Guidelines:**
    - For PostgreSQL connection overload: Use `postgres_kill_long_queries` (works immediately) NOT `postgres_scale_connections` (doesn't work immediately)
    - For Redis memory issues: Use `redis_flush` (clears memory) or `redis_memory_purge` (evicts keys), NOT `redis_restart` (doesn't clear memory)
+   - For GCP Memorystore Redis (gcp-redis):
+     * BASIC tier instances: Cannot use `gcp_redis_restart` (not supported). Use `gcp_redis_scale_memory` instead to scale memory (this will restart the instance).
+     * STANDARD_HA tier instances: Can use `gcp_redis_restart` for failover.
+     * For memory issues: Use `gcp_redis_scale_memory` to increase memory size, or if flush is needed, note that `gcp_redis_flush` requires direct Redis connection (not yet implemented).
    - For Nginx connection overload: 
      * PRIMARY FIX: Use `nginx_scale_connections` to increase worker_connections limit (e.g., 200-300) to handle the load. This is the most effective solution when load generation is active.
      * SECONDARY FIX: Use `nginx_clear_connections` only if you need to clear connections temporarily, but note that connections will reconnect if load generation is still active.

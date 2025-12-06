@@ -80,11 +80,12 @@ class ResourceMonitor:
             logger.error(f"Error getting resource status: {e}", exc_info=True)
             return None
     
-    async def get_all_resources(self, filter_excluded: bool = False) -> List[Dict[str, Any]]:
-        """Get status of all resources.
+    async def get_all_resources(self, filter_excluded: bool = False, include_gcp: bool = True) -> List[Dict[str, Any]]:
+        """Get status of all resources (local Docker containers + GCP resources if enabled).
         
         Args:
             filter_excluded: If True, exclude containers matching excluded patterns (default: False)
+            include_gcp: If True, include GCP resources (if GCP is enabled) (default: True)
         """
         logger.debug(f"get_all_resources called (filter_excluded={filter_excluded})")
         resources = []
@@ -112,55 +113,75 @@ class ResourceMonitor:
                     resources.append(status)
                 elif isinstance(status, Exception):
                     logger.debug(f"Error getting container status: {status}")
-            return resources
+        else:
+            # Use Docker client
+            try:
+                logger.debug("Fetching containers from Docker client...")
+                containers = self.docker_client.containers.list(all=True)
+                logger.debug(f"Found {len(containers)} total containers")
+                
+                # Filter containers first
+                filtered_containers = [
+                    container for container in containers
+                    if not (filter_excluded and any(pattern in container.name for pattern in excluded_patterns))
+                ]
+                logger.debug(f"Processing {len(filtered_containers)} containers after filtering")
+                
+                # Process all containers in parallel
+                logger.debug("Starting parallel status checks...")
+                status_tasks = [self._get_container_status(container) for container in filtered_containers]
+                statuses = await asyncio.gather(*status_tasks, return_exceptions=True)
+                
+                # Collect successful statuses
+                for i, status in enumerate(statuses):
+                    if isinstance(status, dict) and status:
+                        resources.append(status)
+                        logger.debug(f"Container {filtered_containers[i].name}: {status.get('status', 'UNKNOWN')}")
+                    elif isinstance(status, Exception):
+                        logger.warning(f"Error getting status for container {filtered_containers[i].name}: {status}", exc_info=isinstance(status, Exception))
+                
+                logger.info(f"Successfully retrieved status for {len(resources)}/{len(filtered_containers)} containers")
+            except Exception as e:
+                logger.error(f"Error getting all resources: {e}", exc_info=True)
+                # Fallback to CLI
+                logger.info("Falling back to Docker CLI")
+                containers_data = get_containers_via_cli()
+                # Filter containers first
+                filtered_containers_data = [
+                    container_data for container_data in containers_data
+                    if not (filter_excluded and any(pattern in container_data.get("name", "").lstrip("/") for pattern in excluded_patterns))
+                ]
+                
+                # Process all containers in parallel
+                status_tasks = [self._get_container_status_from_data(container_data) for container_data in filtered_containers_data]
+                statuses = await asyncio.gather(*status_tasks, return_exceptions=True)
+                
+                # Collect successful statuses
+                for status in statuses:
+                    if isinstance(status, dict) and status:
+                        resources.append(status)
+                    elif isinstance(status, Exception):
+                        logger.debug(f"Error getting container status: {status}")
         
-        try:
-            logger.debug("Fetching containers from Docker client...")
-            containers = self.docker_client.containers.list(all=True)
-            logger.debug(f"Found {len(containers)} total containers")
-            
-            # Filter containers first
-            filtered_containers = [
-                container for container in containers
-                if not (filter_excluded and any(pattern in container.name for pattern in excluded_patterns))
-            ]
-            logger.debug(f"Processing {len(filtered_containers)} containers after filtering")
-            
-            # Process all containers in parallel
-            logger.debug("Starting parallel status checks...")
-            status_tasks = [self._get_container_status(container) for container in filtered_containers]
-            statuses = await asyncio.gather(*status_tasks, return_exceptions=True)
-            
-            # Collect successful statuses
-            for i, status in enumerate(statuses):
-                if isinstance(status, dict) and status:
-                    resources.append(status)
-                    logger.debug(f"Container {filtered_containers[i].name}: {status.get('status', 'UNKNOWN')}")
-                elif isinstance(status, Exception):
-                    logger.warning(f"Error getting status for container {filtered_containers[i].name}: {status}", exc_info=isinstance(status, Exception))
-            
-            logger.info(f"Successfully retrieved status for {len(resources)}/{len(filtered_containers)} containers")
-        except Exception as e:
-            logger.error(f"Error getting all resources: {e}", exc_info=True)
-            # Fallback to CLI
-            logger.info("Falling back to Docker CLI")
-            containers_data = get_containers_via_cli()
-            # Filter containers first
-            filtered_containers_data = [
-                container_data for container_data in containers_data
-                if not (filter_excluded and any(pattern in container_data.get("name", "").lstrip("/") for pattern in excluded_patterns))
-            ]
-            
-            # Process all containers in parallel
-            status_tasks = [self._get_container_status_from_data(container_data) for container_data in filtered_containers_data]
-            statuses = await asyncio.gather(*status_tasks, return_exceptions=True)
-            
-            # Collect successful statuses
-            for status in statuses:
-                if isinstance(status, dict) and status:
-                    resources.append(status)
-                elif isinstance(status, Exception):
-                    logger.debug(f"Error getting container status: {status}")
+        # Add GCP resources if enabled
+        if include_gcp:
+            logger.debug(f"Checking GCP resources (include_gcp={include_gcp}, GCP_ENABLED={settings.GCP_ENABLED})")
+            if settings.GCP_ENABLED:
+                try:
+                    from backend.gcp.resource_monitor import GCPResourceMonitor
+                    logger.debug("Importing GCPResourceMonitor...")
+                    gcp_monitor = GCPResourceMonitor()
+                    logger.debug("Calling gcp_monitor.get_all_resources()...")
+                    gcp_resources = await gcp_monitor.get_all_resources()
+                    logger.info(f"Retrieved {len(gcp_resources)} GCP resources from monitor")
+                    resources.extend(gcp_resources)
+                    logger.info(f"Added {len(gcp_resources)} GCP resources to resource list (total: {len(resources)})")
+                except Exception as e:
+                    logger.warning(f"Failed to get GCP resources: {e}", exc_info=True)
+            else:
+                logger.debug("GCP is disabled in settings")
+        else:
+            logger.debug(f"GCP resources not requested (include_gcp={include_gcp})")
         
         return resources
     
