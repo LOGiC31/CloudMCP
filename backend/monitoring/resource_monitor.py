@@ -177,6 +177,8 @@ class ResourceMonitor:
                 resource_type = "postgres"
             elif "redis" in image_name.lower():
                 resource_type = "redis"
+            elif "nginx" in image_name.lower() or "nginx" in container.name.lower():
+                resource_type = "nginx"
             elif "sample-app" in image_name.lower() or "app" in container.name.lower():
                 resource_type = "application"
             
@@ -202,6 +204,8 @@ class ResourceMonitor:
                     app_check_task = self._check_redis_memory(container.name)
                 elif resource_type == "postgres":
                     app_check_task = self._check_postgres_connections(container.name)
+                elif resource_type == "nginx":
+                    app_check_task = self._check_nginx_connections(container.name)
                 
                 # Wait for stats (required) and app check (optional) in parallel
                 if app_check_task:
@@ -239,6 +243,13 @@ class ResourceMonitor:
                         if max_conn > 0 and (total_conn / max_conn) > 0.8:
                             status = "DEGRADED"
                             logger.info(f"PostgreSQL connection overload detected: {total_conn}/{max_conn} ({total_conn/max_conn*100:.1f}%)")
+                    elif resource_type == "nginx":
+                        metrics.update(app_status)
+                        active_conn = app_status.get("active_connections", 0)
+                        worker_conn = app_status.get("worker_connections", 100)
+                        if worker_conn > 0 and (active_conn / worker_conn) > 0.8:
+                            status = "DEGRADED"
+                            logger.info(f"Nginx connection overload detected: {active_conn}/{worker_conn} ({active_conn/worker_conn*100:.1f}%)")
                 
                 # Check container memory pressure
                 if mem_percent > 90:
@@ -277,6 +288,8 @@ class ResourceMonitor:
                 resource_type = "postgres"
             elif "redis" in image_name.lower():
                 resource_type = "redis"
+            elif "nginx" in image_name.lower() or "nginx" in name.lower():
+                resource_type = "nginx"
             elif "sample-app" in image_name.lower() or "app" in name.lower():
                 resource_type = "application"
             
@@ -315,6 +328,8 @@ class ResourceMonitor:
                         app_check_task = self._check_redis_memory(name)
                     elif resource_type == "postgres":
                         app_check_task = self._check_postgres_connections(name)
+                    elif resource_type == "nginx":
+                        app_check_task = self._check_nginx_connections(name)
                     
                     # Wait for app check if needed
                     app_status = None
@@ -333,7 +348,13 @@ class ResourceMonitor:
                             total_conn = app_status.get("total_connections", 0)
                             if max_conn > 0 and (total_conn / max_conn) > 0.8:
                                 status = "DEGRADED"
-                                logger.info(f"PostgreSQL connection overload detected: {total_conn}/{max_conn} ({total_conn/max_conn*100:.1f}%)")
+                        elif resource_type == "nginx":
+                            metrics.update(app_status)
+                            active_conn = app_status.get("active_connections", 0)
+                            worker_conn = app_status.get("worker_connections", 100)
+                            if worker_conn > 0 and (active_conn / worker_conn) > 0.8:
+                                status = "DEGRADED"
+                                logger.info(f"Nginx connection overload detected: {active_conn}/{worker_conn} ({active_conn/worker_conn*100:.1f}%)")
                     
                     # Check container memory pressure
                     if mem_percent > 90:
@@ -460,6 +481,104 @@ class ResourceMonitor:
                 }
         except Exception as e:
             logger.debug(f"Error checking PostgreSQL connections: {e}")
+        return None
+    
+    async def _check_nginx_connections(self, container_name: str) -> Optional[Dict[str, Any]]:
+        """Check Nginx active connections and worker_connections limit."""
+        try:
+            # Try multiple methods to get connection count
+            # Method 1: Try netstat
+            process = await asyncio.create_subprocess_exec(
+                "docker", "exec", container_name, "sh", "-c",
+                "netstat -an 2>/dev/null | grep :80 | grep ESTABLISHED | wc -l || echo 0",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=3)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                stdout = b"0"
+            
+            active_connections = 0
+            if process.returncode == 0:
+                try:
+                    active_connections = int(stdout.decode('utf-8').strip() or 0)
+                except ValueError:
+                    active_connections = 0
+            
+            # If netstat didn't work or returned 0, try ss (more modern, more reliable)
+            if active_connections == 0:
+                try:
+                    ss_process = await asyncio.create_subprocess_exec(
+                        "docker", "exec", container_name, "sh", "-c",
+                        "ss -tn state established '( dport = :80 )' 2>/dev/null | tail -n +2 | wc -l || ss -tn 2>/dev/null | grep :80 | grep ESTAB | wc -l || echo 0",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    ss_stdout, _ = await asyncio.wait_for(ss_process.communicate(), timeout=3)
+                    if ss_process.returncode == 0:
+                        try:
+                            ss_count = int(ss_stdout.decode('utf-8').strip() or 0)
+                            if ss_count > 0:
+                                active_connections = ss_count
+                        except ValueError:
+                            pass
+                except Exception:
+                    pass
+            
+            # Also try checking from host side (connections to port 8080 map to nginx:80)
+            # This is a fallback if container-side detection doesn't work
+            if active_connections == 0:
+                try:
+                    host_process = await asyncio.create_subprocess_exec(
+                        "sh", "-c",
+                        "netstat -an 2>/dev/null | grep :8080 | grep ESTABLISHED | wc -l || ss -tn 2>/dev/null | grep :8080 | grep ESTAB | wc -l || echo 0",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    host_stdout, _ = await asyncio.wait_for(host_process.communicate(), timeout=2)
+                    if host_process.returncode == 0:
+                        try:
+                            host_count = int(host_stdout.decode('utf-8').strip() or 0)
+                            # Use host count as approximation (may include other connections, but better than 0)
+                            if host_count > active_connections:
+                                active_connections = host_count
+                        except ValueError:
+                            pass
+                except Exception:
+                    pass
+            
+            # Get worker_connections from config (default 100)
+            # We'll read from the config file or use default
+            worker_connections = 100  # Default from nginx.conf
+            try:
+                config_process = await asyncio.create_subprocess_exec(
+                    "docker", "exec", container_name, "sh", "-c",
+                    "grep worker_connections /etc/nginx/nginx.conf | awk '{print $2}' | sed 's/;//'",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                config_stdout, _ = await asyncio.wait_for(config_process.communicate(), timeout=2)
+                if config_process.returncode == 0:
+                    try:
+                        worker_connections = int(config_stdout.decode('utf-8').strip() or 100)
+                    except ValueError:
+                        worker_connections = 100
+            except Exception:
+                pass  # Use default
+            
+            connection_usage_percent = (active_connections / worker_connections) * 100 if worker_connections > 0 else 0
+            
+            return {
+                "active_connections": active_connections,
+                "worker_connections": worker_connections,
+                "connection_usage_percent": round(connection_usage_percent, 2)
+            }
+        except Exception as e:
+            logger.debug(f"Error checking Nginx connections: {e}")
         return None
     
     def _calculate_cpu_percent(self, stats: Dict[str, Any]) -> float:

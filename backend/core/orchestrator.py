@@ -143,7 +143,14 @@ class MCPOrchestrator:
                             logger.warning(f"Tool {tool_name} failed: {result.get('message')}")
                     
                     # Step 4: Verify fix
-                    await asyncio.sleep(2)  # Wait a bit for changes to take effect
+                    # Wait longer for Nginx/connection-related fixes to take effect
+                    tools_used = [step.get("tool_name") for step in fix_plan.get("steps", [])]
+                    # Nginx connection fixes: 
+                    # - nginx_scale_connections: needs time for config reload and status check
+                    # - nginx_clear_connections: already waits internally, but we need extra time for status to stabilize
+                    wait_time = 10 if any("nginx" in tool.lower() and "scale" in tool.lower() for tool in tools_used) else (15 if any("nginx" in tool.lower() and "clear" in tool.lower() for tool in tools_used) else (8 if any("nginx" in tool.lower() for tool in tools_used) else (5 if any("connection" in tool.lower() for tool in tools_used) else 2)))
+                    logger.info(f"Waiting {wait_time} seconds for fix to take effect (tools: {tools_used})")
+                    await asyncio.sleep(wait_time)
                     updated_resource_status = await self.resource_monitor.get_all_resources(filter_excluded=False)
                     after_metrics = await self._capture_metrics(updated_resource_status)
                     

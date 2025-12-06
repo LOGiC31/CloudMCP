@@ -16,6 +16,8 @@ const MCPToolsPanel = ({ tools, selectedResource }) => {
         return toolName.includes('postgres');
       } else if (resourceName.includes('redis')) {
         return toolName.includes('redis');
+      } else if (resourceName.includes('nginx')) {
+        return toolName.includes('nginx');
       } else if (resourceName.includes('docker')) {
         return toolName.includes('docker');
       }
@@ -28,6 +30,8 @@ const MCPToolsPanel = ({ tools, selectedResource }) => {
       return <Database size={18} />;
     } else if (toolName.includes('redis')) {
       return <HardDrive size={18} />;
+    } else if (toolName.includes('nginx')) {
+      return <Server size={18} />;
     } else if (toolName.includes('docker')) {
       return <Server size={18} />;
     }

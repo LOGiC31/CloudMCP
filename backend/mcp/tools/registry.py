@@ -19,6 +19,13 @@ from backend.mcp.tools.redis_tools import (
     RedisMemoryPurgeTool,
     RedisInfoTool
 )
+from backend.mcp.tools.nginx_tools import (
+    NginxRestartTool,
+    NginxReloadTool,
+    NginxScaleConnectionsTool,
+    NginxClearConnectionsTool,
+    NginxInfoTool
+)
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,6 +58,13 @@ class MCPToolRegistry:
         self.register(RedisRestartTool())
         self.register(RedisMemoryPurgeTool())
         self.register(RedisInfoTool())
+        
+        # Nginx tools
+        self.register(NginxRestartTool())
+        self.register(NginxReloadTool())
+        self.register(NginxScaleConnectionsTool())
+        self.register(NginxClearConnectionsTool())
+        self.register(NginxInfoTool())
         
         logger.info(f"Registered {len(self._tools)} MCP tools")
     

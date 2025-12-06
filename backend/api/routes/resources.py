@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
 from backend.monitoring.resource_monitor import ResourceMonitor
 from backend.mcp.tools.redis_tools import RedisFlushTool
+from backend.mcp.tools.nginx_tools import NginxClearConnectionsTool
 from backend.utils.logger import get_logger
 import subprocess
 import asyncio
@@ -23,7 +24,7 @@ def get_resource_monitor():
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def get_all_resources(filter_excluded: bool = True):
-    """Get all resources and their status."""
+    """Get all resources and their status. Use this for initial load or when resource list changes."""
     try:
         logger.info(f"Getting all resources (filter_excluded={filter_excluded})")
         resource_monitor = get_resource_monitor()
@@ -32,6 +33,33 @@ async def get_all_resources(filter_excluded: bool = True):
         return resources
     except Exception as e:
         logger.error(f"Error getting all resources: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/status", response_model=List[Dict[str, Any]])
+async def get_resources_status(filter_excluded: bool = True):
+    """Get only resource status updates (lightweight, for polling). Returns minimal data: id, name, status, metrics."""
+    try:
+        logger.debug(f"Getting resource status updates (filter_excluded={filter_excluded})")
+        resource_monitor = get_resource_monitor()
+        resources = await resource_monitor.get_all_resources(filter_excluded=filter_excluded)
+        
+        # Return only status-relevant fields (minimal payload)
+        status_updates = [
+            {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "type": r.get("type"),
+                "status": r.get("status"),
+                "metrics": r.get("metrics", {}),
+                "last_updated": r.get("last_updated"),
+            }
+            for r in resources
+        ]
+        logger.debug(f"Returning status updates for {len(status_updates)} resources")
+        return status_updates
+    except Exception as e:
+        logger.error(f"Error getting resource status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -150,4 +178,46 @@ async def reset_postgres():
     except Exception as e:
         logger.error(f"Error resetting PostgreSQL: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to reset PostgreSQL: {str(e)}")
+
+
+@router.post("/nginx/reset", response_model=Dict[str, Any])
+async def reset_nginx():
+    """Reset Nginx by clearing all active connections and resetting worker_connections to 100."""
+    try:
+        logger.info("Starting Nginx reset operation")
+        
+        # Step 1: Reset worker_connections to 100 (default)
+        logger.debug("Resetting Nginx worker_connections to 100...")
+        from backend.mcp.tools.nginx_tools import NginxScaleConnectionsTool
+        scale_tool = NginxScaleConnectionsTool()
+        scale_result = await scale_tool.execute({"worker_connections": 100})
+        
+        if not scale_result.success:
+            logger.warning(f"Failed to reset worker_connections: {scale_result.message}. Continuing with connection clear...")
+        else:
+            logger.info("Nginx worker_connections reset to 100")
+        
+        # Step 2: Clear connections by reloading
+        logger.debug("Clearing Nginx connections...")
+        clear_tool = NginxClearConnectionsTool()
+        clear_result = await clear_tool.execute({"container_name": "nginx"})
+        
+        if not clear_result.success:
+            logger.error(f"Failed to clear Nginx connections: {clear_result.message}")
+            raise HTTPException(status_code=500, detail=f"Failed to clear Nginx connections: {clear_result.message}")
+        
+        logger.info("Nginx reset completed successfully")
+        return {
+            "success": True,
+            "message": "Nginx reset successfully - worker_connections set to 100 and connections cleared",
+            "data": {
+                "worker_connections_reset": scale_result.success,
+                "connections_cleared": clear_result.success
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resetting Nginx: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 

@@ -135,11 +135,32 @@
   color: var(--accent-warning);
 }
 
+.step-message.pending {
+  background: rgba(99, 102, 241, 0.1);
+  border: 2px solid var(--accent-primary);
+  color: var(--accent-primary);
+}
+
 .step-resources {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.resource-status-group {
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin-top: 10px;
+}
+
+.status-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  margin-right: 4px;
 }
 
 .resource-badge {
@@ -151,6 +172,24 @@
   color: var(--text-primary);
   font-weight: 600;
   border: 1px solid var(--border-color);
+}
+
+.resource-badge.snapshot {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: var(--accent-warning);
+  color: var(--accent-warning);
+}
+
+.resource-badge.current.healthy {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: var(--accent-success);
+  color: var(--accent-success);
+}
+
+.resource-badge.current.degraded {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
 }
 
 .spinning {

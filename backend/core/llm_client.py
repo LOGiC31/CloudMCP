@@ -261,6 +261,10 @@ class LLMClient:
 5. **IMPORTANT: Tool Selection Guidelines:**
    - For PostgreSQL connection overload: Use `postgres_kill_long_queries` (works immediately) NOT `postgres_scale_connections` (doesn't work immediately)
    - For Redis memory issues: Use `redis_flush` (clears memory) or `redis_memory_purge` (evicts keys), NOT `redis_restart` (doesn't clear memory)
+   - For Nginx connection overload: 
+     * PRIMARY FIX: Use `nginx_scale_connections` to increase worker_connections limit (e.g., 200-300) to handle the load. This is the most effective solution when load generation is active.
+     * SECONDARY FIX: Use `nginx_clear_connections` only if you need to clear connections temporarily, but note that connections will reconnect if load generation is still active.
+     * AVOID `nginx_restart` (doesn't clear persistent connections from clients and doesn't scale capacity)
    - Always prefer tools that work immediately over tools that require manual intervention
 6. Create a step-by-step fix plan using the available MCP tools
 7. Return your response as JSON in the following format:

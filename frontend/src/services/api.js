@@ -12,6 +12,7 @@ const api = axios.create({
 export const resourceService = {
   getAll: () => api.get('/api/resources'),
   getStatus: (resourceId) => api.get(`/api/resources/${resourceId}`),
+  getStatusUpdates: () => api.get('/api/resources/status'), // Lightweight status-only endpoint
 };
 
 export const logService = {
@@ -50,6 +51,14 @@ export const sampleAppService = {
           params: { queries: params.queries || 85 } 
         });
         return response;
+      } else if (type === 'nginx') {
+        // Use higher connection count to ensure degradation (need >80% of worker_connections)
+        // Default worker_connections is 100, but may have been scaled up, so use 90 to be safe
+        // If scaled to 300, we'd need 240+, but let's use 90 which works for default 100
+        const response = await axios.post(`${SAMPLE_APP_URL}/load/nginx`, null, { 
+          params: { connections: params.connections || 90 } 
+        });
+        return response;
       } else if (type === 'both') {
         const [redisRes, dbRes] = await Promise.all([
           axios.post(`${SAMPLE_APP_URL}/load/redis`, null, { params: { size_mb: 250 } }),
@@ -68,6 +77,10 @@ export const sampleAppService = {
   resetPostgres: async () => {
     // Call the backend API to reset PostgreSQL
     return api.post('/api/resources/postgres/reset');
+  },
+  resetNginx: async () => {
+    // Call the backend API to reset Nginx
+    return api.post('/api/resources/nginx/reset');
   },
 };
 

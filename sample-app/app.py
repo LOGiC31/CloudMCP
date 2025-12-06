@@ -394,6 +394,90 @@ async def generate_cpu_load(duration: int = 60):
     return {"message": f"Generating CPU load for {duration} seconds"}
 
 
+@app.post("/load/nginx")
+async def generate_nginx_load(background_tasks: BackgroundTasks, connections: int = 90):
+    """Generate Nginx load by creating many persistent connections."""
+    logger.warning(f"Generating Nginx load: {connections} persistent connections")
+    background_tasks.add_task(create_many_nginx_connections, connections)
+    return {"message": f"Generating {connections} persistent connections to Nginx"}
+
+
+def create_many_nginx_connections(num_connections: int):
+    """Create many persistent connections to Nginx to simulate connection overload."""
+    import threading
+    import requests
+    import socket
+    
+    nginx_url = "http://nginx:80"  # Internal Docker network
+    # Fallback to localhost if running outside Docker
+    try:
+        socket.create_connection(("nginx", 80), timeout=1)
+    except:
+        nginx_url = "http://localhost:8080"
+    
+    active_connections = []
+    connection_lock = threading.Lock()
+    
+    def keep_connection_alive(conn_id):
+        """Keep a connection alive by making periodic requests with persistent connections."""
+        try:
+            session = requests.Session()
+            # Configure session for keep-alive
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=1,
+                max_retries=0
+            )
+            session.mount('http://', adapter)
+            
+            # Keep making requests to maintain persistent connections
+            # Use shorter intervals to ensure connections stay active
+            for i in range(60):  # Keep for 10 minutes (60 * 10 seconds)
+                try:
+                    # Make request with keep-alive header
+                    response = session.get(
+                        nginx_url + "/health",
+                        timeout=15,
+                        headers={'Connection': 'keep-alive'},
+                        stream=False
+                    )
+                    # Small sleep to maintain connection but not too long
+                    time.sleep(10)  # Wait 10 seconds between requests
+                except Exception as e:
+                    logger.debug(f"Connection {conn_id} error on request {i}: {e}")
+                    # Try to reconnect
+                    try:
+                        session.close()
+                        session = requests.Session()
+                        session.mount('http://', adapter)
+                    except:
+                        pass
+        except Exception as e:
+            logger.error(f"Connection {conn_id} failed: {e}")
+        finally:
+            with connection_lock:
+                if conn_id in active_connections:
+                    active_connections.remove(conn_id)
+    
+    try:
+        for i in range(num_connections):
+            try:
+                thread = threading.Thread(target=keep_connection_alive, args=(i,), daemon=True)
+                thread.start()
+                with connection_lock:
+                    active_connections.append(i)
+                time.sleep(0.1)  # Small delay between connection starts
+                if i % 10 == 0:
+                    logger.info(f"Created {i+1}/{num_connections} Nginx connections")
+            except Exception as e:
+                logger.error(f"Failed to create connection {i}: {e}")
+        
+        time.sleep(2)  # Give time for connections to establish
+        logger.info(f"Created {len(active_connections)} persistent Nginx connections")
+    except Exception as e:
+        logger.error(f"Error creating Nginx connections: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

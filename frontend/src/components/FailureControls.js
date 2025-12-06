@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle, RefreshCw, Database, HardDrive, Zap } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Database, HardDrive, Zap, Globe } from 'lucide-react';
 import { sampleAppService } from '../services/api';
 import './FailureControls.css';
 
@@ -40,6 +40,8 @@ const FailureControls = ({ onFailureIntroduced, onRefresh }) => {
         await sampleAppService.resetRedis();
       } else if (type === 'postgres') {
         await sampleAppService.resetPostgres();
+      } else if (type === 'nginx') {
+        await sampleAppService.resetNginx();
       }
       setMessage({
         type: 'success',
@@ -90,6 +92,14 @@ const FailureControls = ({ onFailureIntroduced, onRefresh }) => {
             </button>
             <button
               className="btn btn-danger"
+              onClick={() => handleIntroduceFailure('nginx')}
+              disabled={loading}
+            >
+              <Globe size={18} />
+              Nginx Connections
+            </button>
+            <button
+              className="btn btn-danger"
               onClick={() => handleIntroduceFailure('both')}
               disabled={loading}
             >
@@ -116,6 +126,14 @@ const FailureControls = ({ onFailureIntroduced, onRefresh }) => {
             >
               <RefreshCw size={18} />
               Reset PostgreSQL
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => handleReset('nginx')}
+              disabled={loading}
+            >
+              <RefreshCw size={18} />
+              Reset Nginx
             </button>
           </div>
         </div>

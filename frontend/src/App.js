@@ -26,19 +26,28 @@ function App() {
     fixCompleted: false,
   });
 
+  // Load resources list and tools only once on mount (they don't change often)
   useEffect(() => {
-    loadData();
-    // Auto-refresh every 1 minute (60 seconds), but pause during active polling
-    const interval = setInterval(() => {
-      if (!isPolling) {
-        loadData();
-      }
-    }, 60000); // 60 seconds = 1 minute
-    return () => clearInterval(interval);
-  }, [isPolling]); // eslint-disable-line react-hooks/exhaustive-deps
+    loadResourcesAndTools();
+  }, []); // Only run once on mount
 
-  const loadData = async () => {
+  // Poll for status updates only (lightweight)
+  useEffect(() => {
+    if (!loading) {
+      // Start polling for status updates
+      const statusInterval = setInterval(() => {
+        if (!isPolling) {
+          updateResourceStatus();
+        }
+      }, 30000); // Poll every 30 seconds for status updates
+      
+      return () => clearInterval(statusInterval);
+    }
+  }, [loading, isPolling]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadResourcesAndTools = async () => {
     try {
+      setLoading(true);
       const { resourceService, toolService } = await import('./services/api');
       const [resourcesRes, toolsRes] = await Promise.all([
         resourceService.getAll(),
@@ -48,34 +57,67 @@ function App() {
       setResources(newResources);
       setTools(toolsRes.data || []);
       setLoading(false);
-      
-      // Update validation state if failure was introduced
-      setValidationState(prev => {
-        if (prev.failureIntroduced && !prev.fixTriggered) {
-          const degraded = newResources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED');
-          return {
-            ...prev,
-            degradedResources: degraded.map(r => r.name),
-          };
-        }
-        return prev;
-      });
-      
-      // Update validation state if fix was completed
-      setValidationState(prev => {
-        if (prev.fixTriggered) {
-          const allHealthy = newResources.length > 0 && newResources.every(r => r.status === 'HEALTHY');
-          return {
-            ...prev,
-            fixCompleted: allHealthy || prev.fixCompleted,
-          };
-        }
-        return prev;
-      });
     } catch (error) {
-      console.error('Error loading data:', error);
+      console.error('Error loading resources and tools:', error);
       setLoading(false);
     }
+  };
+
+  const updateResourceStatus = async () => {
+    try {
+      const { resourceService } = await import('./services/api');
+      const statusRes = await resourceService.getStatusUpdates();
+      const statusUpdates = statusRes.data;
+      
+      // Update only status and metrics for existing resources
+      setResources(prevResources => {
+        const updatedResources = prevResources.map(prevResource => {
+          const statusUpdate = statusUpdates.find(su => su.id === prevResource.id || su.name === prevResource.name);
+          if (statusUpdate) {
+            return {
+              ...prevResource,
+              status: statusUpdate.status,
+              metrics: statusUpdate.metrics,
+              last_updated: statusUpdate.last_updated,
+            };
+          }
+          return prevResource;
+        });
+        
+        // Update validation state based on status changes
+        updateValidationState(updatedResources);
+        
+        return updatedResources;
+      });
+    } catch (error) {
+      console.error('Error updating resource status:', error);
+    }
+  };
+
+  const updateValidationState = (newResources) => {
+    // Update validation state if failure was introduced
+    setValidationState(prev => {
+      if (prev.failureIntroduced && !prev.fixTriggered) {
+        const degraded = newResources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED');
+        return {
+          ...prev,
+          degradedResources: degraded.map(r => r.name),
+        };
+      }
+      return prev;
+    });
+    
+    // Update validation state if fix was completed
+    setValidationState(prev => {
+      if (prev.fixTriggered) {
+        const allHealthy = newResources.length > 0 && newResources.every(r => r.status === 'HEALTHY');
+        return {
+          ...prev,
+          fixCompleted: allHealthy || prev.fixCompleted,
+        };
+      }
+      return prev;
+    });
   };
 
   const handleResourceSelect = (resource) => {
@@ -92,7 +134,7 @@ function App() {
     
     // Wait for status to update (longer for database connections, Redis needs time to fill memory)
     // Redis needs more time because it has to fill memory to trigger DEGRADED status
-    const initialWait = failureType === 'database' ? 10000 : failureType === 'redis' ? 12000 : 10000;
+    const initialWait = failureType === 'database' ? 10000 : failureType === 'redis' ? 12000 : failureType === 'nginx' ? 10000 : 10000;
     await new Promise(resolve => setTimeout(resolve, initialWait));
     
     // Smart polling: check status until we see degraded resources or timeout
@@ -103,21 +145,42 @@ function App() {
     const pollForStatus = async () => {
       attempts++;
       
-      // Fetch latest resources directly from API
+      // Fetch latest status updates directly from API
       const { resourceService } = await import('./services/api');
       try {
-        const resourcesRes = await resourceService.getAll();
-        const newResources = resourcesRes.data;
+        const statusRes = await resourceService.getStatusUpdates();
+        const statusUpdates = statusRes.data;
         
-        // Update state
-        setResources(newResources);
+        // Update only status for existing resources
+        setResources(prevResources => {
+          const updated = prevResources.map(prevResource => {
+            const statusUpdate = statusUpdates.find(su => su.id === prevResource.id || su.name === prevResource.name);
+            if (statusUpdate) {
+              return {
+                ...prevResource,
+                status: statusUpdate.status,
+                metrics: statusUpdate.metrics,
+                last_updated: statusUpdate.last_updated,
+              };
+            }
+            return prevResource;
+          });
+          return updated;
+        });
+        
+        // Get updated resources for validation (merge with existing)
+        const newResources = statusUpdates.map(su => {
+          const existing = resources.find(r => r.id === su.id || r.name === su.name);
+          return existing ? { ...existing, ...su } : su;
+        });
         
         const degraded = newResources.filter(r => r.status === 'DEGRADED' || r.status === 'FAILED');
         
         // Check if expected resources are degraded
         const expectedResources = failureType === 'redis' ? ['redis'] :
                                  failureType === 'database' ? ['postgres'] :
-                                 ['redis', 'postgres'];
+                                 failureType === 'nginx' ? ['nginx'] :
+                                 ['redis', 'postgres', 'nginx'];
         
         const foundDegraded = degraded.filter(r => {
           const nameLower = r.name.toLowerCase();
@@ -133,14 +196,19 @@ function App() {
             }
           });
           
+          // Always set failureIntroduced to true, even if timeout (so validation can show status)
           setValidationState(prev => ({
             ...prev,
             failureIntroduced: true,
             failureType: failureType,
             degradedResources: foundDegraded.map(r => r.name),
-            degradedStateSnapshot: degradedSnapshot, // Store snapshot for validation
+            degradedStateSnapshot: degradedSnapshot, // Store snapshot for validation (may be empty if timeout)
           }));
           setIsPolling(false);
+          
+          if (foundDegraded.length === 0 && attempts >= maxAttempts) {
+            console.warn(`Timeout: Failed to detect ${expectedResources.join(' or ')} as degraded after ${maxAttempts} attempts`);
+          }
         } else {
           // Continue polling
           setTimeout(pollForStatus, pollInterval);
@@ -151,6 +219,14 @@ function App() {
         if (attempts < maxAttempts) {
           setTimeout(pollForStatus, pollInterval);
         } else {
+          // Timeout - set failureIntroduced to true so validation can show status
+          setValidationState(prev => ({
+            ...prev,
+            failureIntroduced: true,
+            failureType: failureType,
+            degradedResources: [],
+            degradedStateSnapshot: {}, // Empty snapshot on error/timeout
+          }));
           setIsPolling(false);
         }
       }
@@ -173,9 +249,30 @@ function App() {
     // Check status once - fix should already be complete
     const { resourceService } = await import('./services/api');
     try {
-      const resourcesRes = await resourceService.getAll();
-      const newResources = resourcesRes.data;
-      setResources(newResources);
+      const statusRes = await resourceService.getStatusUpdates();
+      const statusUpdates = statusRes.data;
+      
+      // Update only status for existing resources
+      setResources(prevResources => {
+        return prevResources.map(prevResource => {
+          const statusUpdate = statusUpdates.find(su => su.id === prevResource.id || su.name === prevResource.name);
+          if (statusUpdate) {
+            return {
+              ...prevResource,
+              status: statusUpdate.status,
+              metrics: statusUpdate.metrics,
+              last_updated: statusUpdate.last_updated,
+            };
+          }
+          return prevResource;
+        });
+      });
+      
+      // Get updated resources for validation
+      const newResources = statusUpdates.map(su => {
+        const existing = resources.find(r => r.id === su.id || r.name === su.name);
+        return existing ? { ...existing, ...su } : su;
+      });
       
       const allHealthy = newResources.length > 0 && newResources.every(r => r.status === 'HEALTHY');
       
@@ -203,6 +300,11 @@ function App() {
     });
   };
 
+  const handleRefreshResources = async () => {
+    // Manual refresh of resources list and tools (in case containers were added/removed)
+    await loadResourcesAndTools();
+  };
+
   const handleClearAll = async () => {
     try {
       // Clear fix history from backend
@@ -216,7 +318,7 @@ function App() {
       setFixHistoryRefreshKey(prev => prev + 1);
       
       // Refresh data
-      await loadData();
+      await loadResourcesAndTools();
       
       // Show success message (you could add a toast notification here)
       console.log('Fix history and validation cleared successfully');
@@ -266,7 +368,7 @@ function App() {
       <div className="app-main">
         <FailureControls
           onFailureIntroduced={handleFailureIntroduced}
-          onRefresh={loadData}
+          onRefresh={handleRefreshResources}
         />
         <ValidationPanel
           validationState={validationState}
@@ -301,7 +403,7 @@ function App() {
 
   return (
     <div className="app">
-      <Header />
+      <Header onRefresh={handleRefreshResources} />
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
         {activeTab === 'local' && (
           <div className="tab-panel">

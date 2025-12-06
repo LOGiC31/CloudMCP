@@ -23,14 +23,21 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
   };
 
   const validateFailureIntroduced = () => {
-    if (!validationState.failureIntroduced) return null;
+    if (!validationState.failureIntroduced) {
+      // Still waiting for failure to be introduced
+      return {
+        pending: true,
+        message: 'Waiting for failure to be introduced...',
+      };
+    }
     
     // Use the snapshot of degraded state when failure was detected
     // This prevents false negatives if the LLM fix happens very quickly
     const degradedSnapshot = validationState.degradedStateSnapshot || {};
     const expectedResources = validationState.failureType === 'redis' ? ['redis'] :
                              validationState.failureType === 'database' ? ['postgres'] :
-                             ['redis', 'postgres'];
+                             validationState.failureType === 'nginx' ? ['nginx'] :
+                             ['redis', 'postgres', 'nginx'];
     
     // Check if we have a snapshot of degraded resources
     const foundInSnapshot = expectedResources.filter(expected => {
@@ -48,13 +55,31 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
         return snapshotKey ? `${snapshotKey}: ${degradedSnapshot[snapshotKey]}` : null;
       }).filter(Boolean).join(', ');
       
-      return {
-        success: true,
-        message: `✅ Failure validated: ${snapshotStatus} (detected when failure was introduced)`,
-        resources: foundInSnapshot,
-      };
+      // Check if resources are still degraded or have been fixed
+      const currentDegraded = getDegradedResources();
+      const stillDegraded = currentDegraded.filter(r => {
+        const nameLower = r.name.toLowerCase();
+        return foundInSnapshot.some(expected => nameLower.includes(expected.toLowerCase()));
+      });
+      
+      if (stillDegraded.length > 0) {
+        // Still degraded - show both snapshot and current state
+        const currentStatus = stillDegraded.map(r => `${r.name}: ${r.status}`).join(', ');
+        return {
+          success: true,
+          message: `✅ Failure validated: ${snapshotStatus} (detected when failure was introduced). Current status: ${currentStatus} - still needs fixing.`,
+          resources: foundInSnapshot,
+        };
+      } else {
+        // Already fixed - clarify this
+        return {
+          success: true,
+          message: `✅ Failure validated: ${snapshotStatus} (detected when failure was introduced). Resource is now HEALTHY (may have been auto-fixed or recovered).`,
+          resources: foundInSnapshot,
+        };
+      }
     } else {
-      // Fallback: check current state if no snapshot (shouldn't happen, but just in case)
+      // Fallback: check current state if no snapshot
       const degraded = getDegradedResources();
       const foundDegraded = degraded.filter(r => {
         const nameLower = r.name.toLowerCase();
@@ -74,16 +99,26 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
           return resource ? `${resource.name}: ${resource.status}` : `${expected}: not found`;
         }).join(', ');
         
+        // No snapshot and no degraded resources found - failure detection timed out or failed
         return {
           success: false,
-          message: `⚠️ Validation: Expected ${expectedResources.join(' or ')} to be DEGRADED. Current: ${expectedStatus}. Note: If LLM fix completed quickly, check the snapshot.`,
+          message: `❌ Validation failed: Expected ${expectedResources.join(' or ')} to be DEGRADED. Current: ${expectedStatus}. The failure may not have been introduced properly, or it takes longer to manifest.`,
         };
       }
     }
   };
 
   const validateFixCompleted = () => {
-    if (!validationState.fixTriggered || !validationState.fixCompleted) return null;
+    if (!validationState.fixTriggered) {
+      return null; // Fix not triggered yet
+    }
+    
+    if (!validationState.fixCompleted) {
+      return {
+        pending: true,
+        message: 'Waiting for LLM fix to complete...',
+      };
+    }
     
     const allHealthy = getAllHealthy();
     const degraded = getDegradedResources();
@@ -96,11 +131,16 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
     } else if (degraded.length > 0) {
       return {
         success: false,
-        message: `⚠️ Fix incomplete: ${degraded.map(r => r.name).join(', ')} is still DEGRADED`,
+        message: `❌ Fix incomplete: ${degraded.map(r => r.name).join(', ')} is still DEGRADED`,
         resources: degraded.map(r => r.name),
       };
     }
-    return null;
+    
+    // Fix completed but status unclear
+    return {
+      success: false,
+      message: '⚠️ Fix completed but resource status is unclear',
+    };
   };
 
   const failureValidation = validateFailureIntroduced();
@@ -130,27 +170,44 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
         {/* Step 1: Failure Introduction */}
         <div className="validation-step">
           <div className="step-header">
-            {validationState.failureIntroduced ? (
-              failureValidation?.success ? (
-                <CheckCircle size={20} className="step-icon success" />
-              ) : (
-                <XCircle size={20} className="step-icon failed" />
-              )
+            {failureValidation?.pending ? (
+              <Loader size={20} className="step-icon pending spinning" />
+            ) : failureValidation?.success ? (
+              <CheckCircle size={20} className="step-icon success" />
+            ) : failureValidation ? (
+              <XCircle size={20} className="step-icon failed" />
             ) : (
               <Loader size={20} className="step-icon pending spinning" />
             )}
             <span className="step-title">1. Failure Introduction</span>
           </div>
-          {validationState.failureIntroduced && failureValidation && (
-            <div className={`step-message ${failureValidation.success ? 'success' : 'warning'}`}>
+          {failureValidation && (
+            <div className={`step-message ${failureValidation.pending ? 'pending' : (failureValidation.success ? 'success' : 'warning')}`}>
               {failureValidation.message}
               {failureValidation.resources && (
                 <div className="step-resources">
-                  {failureValidation.resources.map((r, idx) => (
-                    <span key={idx} className="resource-badge">
-                      {r}: {currentStatus[r] || 'UNKNOWN'}
-                    </span>
-                  ))}
+                  <div className="resource-status-group">
+                    <span className="status-label">Snapshot (when detected):</span>
+                    {failureValidation.resources.map((r, idx) => {
+                      const snapshotKey = Object.keys(validationState.degradedStateSnapshot || {}).find(name => 
+                        name.toLowerCase().includes(r.toLowerCase())
+                      );
+                      const snapshotStatus = snapshotKey ? validationState.degradedStateSnapshot[snapshotKey] : 'UNKNOWN';
+                      return (
+                        <span key={idx} className="resource-badge snapshot">
+                          {r}: {snapshotStatus}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <div className="resource-status-group">
+                    <span className="status-label">Current status:</span>
+                    {failureValidation.resources.map((r, idx) => (
+                      <span key={idx} className={`resource-badge current ${currentStatus[r] === 'HEALTHY' ? 'healthy' : 'degraded'}`}>
+                        {r}: {currentStatus[r] || 'UNKNOWN'}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -171,18 +228,22 @@ const ValidationPanel = ({ validationState, resources, onReset, onClearAll }) =>
         )}
 
         {/* Step 3: Fix Completion */}
-        {validationState.fixCompleted && (
+        {validationState.fixTriggered && (
           <div className="validation-step">
             <div className="step-header">
-              {fixValidation?.success ? (
+              {fixValidation?.pending ? (
+                <Loader size={20} className="step-icon pending spinning" />
+              ) : fixValidation?.success ? (
                 <CheckCircle size={20} className="step-icon success" />
-              ) : (
+              ) : fixValidation ? (
                 <XCircle size={20} className="step-icon failed" />
+              ) : (
+                <Loader size={20} className="step-icon pending spinning" />
               )}
               <span className="step-title">3. Fix Completion</span>
             </div>
             {fixValidation && (
-              <div className={`step-message ${fixValidation.success ? 'success' : 'warning'}`}>
+              <div className={`step-message ${fixValidation.pending ? 'pending' : (fixValidation.success ? 'success' : 'warning')}`}>
                 {fixValidation.message}
                 {fixValidation.resources && (
                   <div className="step-resources">
